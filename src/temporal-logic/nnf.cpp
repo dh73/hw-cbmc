@@ -79,7 +79,14 @@ std::optional<exprt> negate_property_node(const exprt &expr)
     // not always [x:y] p --> s_eventually [x:y] not p
     auto &always = to_sva_ranged_always_expr(expr);
     return sva_ranged_s_eventually_exprt{
-      always.lower(), always.upper(), not_exprt{always.op()}};
+      always.from(), always.to(), not_exprt{always.op()}};
+  }
+  else if(expr.id() == ID_sva_s_always)
+  {
+    // not s_always [x:y] p --> eventually [x:y] not p
+    auto &s_always = to_sva_s_always_expr(expr);
+    return sva_eventually_exprt{
+      s_always.from(), s_always.to(), not_exprt{s_always.op()}};
   }
   else if(expr.id() == ID_sva_s_eventually)
   {
@@ -91,7 +98,7 @@ std::optional<exprt> negate_property_node(const exprt &expr)
     // not eventually[i:j] p --> s_always[i:j] not p
     auto &eventually = to_sva_eventually_expr(expr);
     return sva_s_always_exprt{
-      eventually.lower(), eventually.upper(), not_exprt{eventually.op()}};
+      eventually.from(), eventually.to(), not_exprt{eventually.op()}};
   }
   else if(expr.id() == ID_sva_until)
   {
@@ -130,16 +137,35 @@ std::optional<exprt> negate_property_node(const exprt &expr)
     // 1800 2017 16.12.9
     // !(a #-# b)   --->   a |-> !b
     auto &followed_by = to_sva_followed_by_expr(expr);
-    auto not_b = not_exprt{followed_by.property()};
-    return sva_overlapped_implication_exprt{followed_by.lhs(), not_b};
+    auto not_b = not_exprt{followed_by.consequent()};
+    return sva_overlapped_implication_exprt{followed_by.antecedent(), not_b};
   }
   else if(expr.id() == ID_sva_nonoverlapped_followed_by)
   {
     // 1800 2017 16.12.9
     // !(a #=# b)   --->   a |=> !b
     auto &followed_by = to_sva_followed_by_expr(expr);
-    auto not_b = not_exprt{followed_by.property()};
-    return sva_non_overlapped_implication_exprt{followed_by.lhs(), not_b};
+    auto not_b = not_exprt{followed_by.consequent()};
+    return sva_non_overlapped_implication_exprt{
+      followed_by.antecedent(), not_b};
+  }
+  else if(expr.id() == ID_sva_overlapped_implication)
+  {
+    // 1800 2017 16.12.9
+    // !(a |-> b)   --->   a #-# !b
+    auto &implication = to_sva_implication_base_expr(expr);
+    auto not_b = not_exprt{implication.consequent()};
+    return sva_followed_by_exprt{
+      implication.antecedent(), ID_sva_overlapped_followed_by, not_b};
+  }
+  else if(expr.id() == ID_sva_non_overlapped_implication)
+  {
+    // 1800 2017 16.12.9
+    // !(a |=> b)   --->   a #=# !b
+    auto &implication = to_sva_implication_base_expr(expr);
+    auto not_b = not_exprt{implication.consequent()};
+    return sva_followed_by_exprt{
+      implication.antecedent(), ID_sva_nonoverlapped_followed_by, not_b};
   }
   else
     return {};

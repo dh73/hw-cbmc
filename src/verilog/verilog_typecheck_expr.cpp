@@ -286,6 +286,14 @@ exprt verilog_typecheck_exprt::convert_expr_concatenation(
   Forall_operands(it, expr)
   {
     convert_expr(*it);
+
+    // check if there's an unsized literal (1800-2017 11.4.12)
+    if(it->get_bool(ID_C_verilog_unsized))
+    {
+      throw errort().with_location(it->source_location())
+        << "unsized literals are not allowed in concatenations";
+    }
+
     must_be_integral(*it);
 
     const typet &type = it->type();
@@ -731,7 +739,7 @@ exprt verilog_typecheck_exprt::typename_string(const exprt &expr)
 
   std::string s;
 
-  if(type.id() == ID_unsignedbv || type.id() == ID_verilog_unsignedbv)
+  if(type.id() == ID_unsignedbv)
   {
     if(verilog_type == ID_verilog_byte)
       s = "byte unsigned";
@@ -744,11 +752,15 @@ exprt verilog_typecheck_exprt::typename_string(const exprt &expr)
     else
       s = "bit[" + to_string(left) + ":" + to_string(right) + "]";
   }
+  else if(type.id() == ID_verilog_unsignedbv)
+  {
+    s = "logic[" + to_string(left) + ":" + to_string(right) + "]";
+  }
   else if(type.id() == ID_bool)
   {
     s = "bit";
   }
-  else if(type.id() == ID_signedbv || type.id() == ID_verilog_signedbv)
+  else if(type.id() == ID_signedbv)
   {
     if(verilog_type == ID_verilog_byte)
       s = "byte";
@@ -760,6 +772,10 @@ exprt verilog_typecheck_exprt::typename_string(const exprt &expr)
       s = "shortint";
     else
       s = "bit signed[" + to_string(left) + ":" + to_string(right) + "]";
+  }
+  else if(type.id() == ID_verilog_signedbv)
+  {
+    s = "logic signed[" + to_string(left) + ":" + to_string(right) + "]";
   }
   else if(type.id() == ID_verilog_realtime)
   {
@@ -2115,6 +2131,14 @@ void verilog_typecheck_exprt::implicit_typecast(
       expr = typecast_exprt{expr, dest_type};
       return;
     }
+    else if(
+      dest_type.id() == ID_bool || dest_type.id() == ID_signedbv ||
+      dest_type.id() == ID_unsignedbv)
+    {
+      // Cast from float to int -- the rounding mode is added during lowering.
+      expr = typecast_exprt{expr, dest_type};
+      return;
+    }
   }
   else if(src_type.id() == ID_verilog_null)
   {
@@ -2860,15 +2884,22 @@ Function: verilog_typecheck_exprt::convert_shl_expr
 
 exprt verilog_typecheck_exprt::convert_shl_expr(shl_exprt expr)
 {
-  convert_expr(expr.op0());
-  convert_expr(expr.op1());
-  
+  convert_expr(expr.lhs());
+  convert_expr(expr.rhs());
+
   no_bool_ops(expr);
 
-  // the bit width of a shift is always the bit width of the left operand
-  const typet &op0_type=expr.op0().type();
-  
-  expr.type()=op0_type;
+  const typet &lhs_type = expr.lhs().type();
+  const typet &rhs_type = expr.rhs().type();
+
+  // The bit width of a shift is always the bit width of the left operand.
+  // The result is four-valued if either of the operands is four-valued.
+  if(is_four_valued(lhs_type))
+    expr.type() = lhs_type;
+  else if(is_four_valued(rhs_type))
+    expr.type() = four_valued(lhs_type);
+  else
+    expr.type() = lhs_type;
 
   return std::move(expr);
 }
@@ -3058,16 +3089,26 @@ exprt verilog_typecheck_exprt::convert_binary_expr(binary_exprt expr)
     must_be_integral(expr.rhs());
     no_bool_ops(expr);
 
-    const typet &op0_type = expr.op0().type();
+    const typet &lhs_type = expr.lhs().type();
+    const typet &rhs_type = expr.rhs().type();
 
     if(
-      op0_type.id() == ID_signedbv || op0_type.id() == ID_verilog_signedbv ||
-      op0_type.id() == ID_integer)
+      lhs_type.id() == ID_signedbv || lhs_type.id() == ID_verilog_signedbv ||
+      lhs_type.id() == ID_integer)
+    {
       expr.id(ID_ashr);
+    }
     else
       expr.id(ID_lshr);
 
-    expr.type()=op0_type;
+    // The bit width of a shift is always the bit width of the left operand.
+    // The result is four-valued if either of the operands is four-valued.
+    if(is_four_valued(lhs_type))
+      expr.type() = lhs_type;
+    else if(is_four_valued(rhs_type))
+      expr.type() = four_valued(lhs_type);
+    else
+      expr.type() = lhs_type;
 
     return std::move(expr);
   }
@@ -3084,7 +3125,18 @@ exprt verilog_typecheck_exprt::convert_binary_expr(binary_exprt expr)
     must_be_integral(expr.lhs());
     must_be_integral(expr.rhs());
     no_bool_ops(expr);
-    expr.type()=expr.op0().type();
+
+    const typet &lhs_type = expr.lhs().type();
+    const typet &rhs_type = expr.rhs().type();
+
+    // The bit width of a shift is always the bit width of the left operand.
+    // The result is four-valued if either of the operands is four-valued.
+    if(is_four_valued(lhs_type))
+      expr.type() = lhs_type;
+    else if(is_four_valued(rhs_type))
+      expr.type() = four_valued(lhs_type);
+    else
+      expr.type() = lhs_type;
 
     return std::move(expr);
   }

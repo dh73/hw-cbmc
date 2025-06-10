@@ -14,6 +14,7 @@ Author: Daniel Kroening, daniel.kroening@inf.ethz.ch
 #include <ebmc/liveness_to_safety.h>
 #include <ebmc/transition_system.h>
 #include <solvers/bdd/miniBDD/miniBDD.h>
+#include <solvers/prop/literal_expr.h>
 #include <solvers/sat/satcheck.h>
 #include <temporal-logic/ctl.h>
 #include <temporal-logic/ltl.h>
@@ -22,7 +23,6 @@ Author: Daniel Kroening, daniel.kroening@inf.ethz.ch
 #include <trans-netlist/instantiate_netlist.h>
 #include <trans-netlist/trans_trace_netlist.h>
 #include <trans-netlist/unwind_netlist.h>
-#include <verilog/sva_expr.h>
 
 #include "netlist.h"
 
@@ -64,6 +64,8 @@ protected:
   messaget message;
   const namespacet ns;
   netlistt netlist;
+
+  static std::optional<exprt> property_supported(const exprt &);
 
   // the Manager must appear before any BDDs
   // to do the cleanup in the right order
@@ -196,10 +198,20 @@ property_checker_resultt bdd_enginet::operator()()
                          << ", nodes: " << netlist.number_of_nodes()
                          << messaget::eom;
 
-    const auto property_map = properties.make_property_map();
-
-    for(const auto &[_, expr] : property_map)
-      get_atomic_propositions(expr);
+    for(auto &property : properties.properties)
+    {
+      if(!property.is_disabled() && !property.is_assumed())
+      {
+        auto converted_opt = property_supported(property.normalized_expr);
+        if(converted_opt.has_value())
+        {
+          property.normalized_expr = *converted_opt;
+          get_atomic_propositions(*converted_opt);
+        }
+        else
+          property.failure("property not supported by BDD engine");
+      }
+    }
 
     message.status() << "Building BDD for netlist" << messaget::eom;
 
@@ -410,7 +422,7 @@ void bdd_enginet::compute_counterexample(
   CHECK_RETURN(netlist_property != netlist.properties.end());
 
   property.timeframe_literals =
-    ::unwind_property(netlist_property->second, bmc_map);
+    ::unwind_property(netlist_property->second.value(), bmc_map);
 
   // we need the propertyt to fail in one of the timeframes
   bvt clause=property.timeframe_literals;
@@ -437,6 +449,43 @@ void bdd_enginet::compute_counterexample(
 
 /*******************************************************************\
 
+Function: bdd_enginet::property_supported
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+std::optional<exprt> bdd_enginet::property_supported(const exprt &expr)
+{
+  // Our engine knows all of CTL.
+  if(is_CTL(expr))
+    return expr;
+
+  if(is_LTL(expr))
+  {
+    // We can map selected path properties to CTL.
+    return LTL_to_CTL(expr);
+  }
+
+  if(is_SVA(expr))
+  {
+    // We can map some SVA to LTL. In turn, some of that can be mapped to CTL.
+    auto ltl_opt = SVA_to_LTL(expr);
+    if(ltl_opt.has_value())
+      return property_supported(ltl_opt.value());
+    else
+      return {};
+  }
+
+  return {};
+}
+
+/*******************************************************************\
+
 Function: bdd_enginet::check_property
 
   Inputs:
@@ -455,44 +504,11 @@ void bdd_enginet::check_property(propertyt &property)
   if(property.is_assumed())
     return;
 
+  if(property.is_failure())
+    return;
+
   message.status() << "Checking " << property.name << messaget::eom;
   property.status=propertyt::statust::UNKNOWN;
-
-  // special treatment for AGp
-  auto is_AGp = [](const exprt &expr) {
-    return (expr.id() == ID_AG || expr.id() == ID_G ||
-            expr.id() == ID_sva_always) &&
-           !has_temporal_operator(to_unary_expr(expr).op());
-  };
-
-  // Our engine knows CTL only.
-  // We map selected path properties to CTL.
-
-  if(
-    property.normalized_expr.id() == ID_G &&
-    to_G_expr(property.normalized_expr).op().id() == ID_F &&
-    !has_temporal_operator(
-      to_F_expr(to_G_expr(property.normalized_expr).op()).op()))
-  {
-    // G F p --> AG AF p
-    auto p = to_F_expr(to_G_expr(property.normalized_expr).op()).op();
-    property.normalized_expr = AG_exprt{AF_exprt{p}};
-  }
-
-  if(
-    property.normalized_expr.id() == ID_sva_always &&
-    to_sva_always_expr(property.normalized_expr).op().id() ==
-      ID_sva_s_eventually &&
-    !has_temporal_operator(to_sva_s_eventually_expr(
-                             to_sva_always_expr(property.normalized_expr).op())
-                             .op()))
-  {
-    // always s_eventually p --> AG AF p
-    auto p = to_sva_s_eventually_expr(
-               to_sva_always_expr(property.normalized_expr).op())
-               .op();
-    property.normalized_expr = AG_exprt{AF_exprt{p}};
-  }
 
   if(is_AGp(property.normalized_expr))
   {
@@ -503,7 +519,7 @@ void bdd_enginet::check_property(propertyt &property)
     check_CTL(property);
   }
   else
-    property.failure("property not supported by BDD engine");
+    DATA_INVARIANT(false, "unexpected normalized property");
 }
 
 /*******************************************************************\
@@ -576,7 +592,7 @@ void bdd_enginet::check_AGp(propertyt &property)
     // have we saturated?
     if((set_union == states).is_true())
     {
-      property.proved();
+      property.proved("BDD");
       message.status() << "Property proved" << messaget::eom;
       break;
     }
@@ -616,7 +632,7 @@ void bdd_enginet::check_CTL(propertyt &property)
   if(intersection.is_false())
   {
     // intersection empty, proved
-    property.proved();
+    property.proved("BDD");
     message.status() << "Property proved" << messaget::eom;
   }
   else
@@ -997,7 +1013,14 @@ void bdd_enginet::build_BDDs()
         // find the netlist property
         auto netlist_property = netlist.properties.find(property.identifier);
         CHECK_RETURN(netlist_property != netlist.properties.end());
-        auto l = std::get<netlistt::Gpt>(netlist_property->second).p;
+        CHECK_RETURN(netlist_property->second.has_value());
+        DATA_INVARIANT(
+          netlist_property->second.value().id() == ID_G,
+          "assumed property must be G");
+        auto &p = to_G_expr(netlist_property->second.value()).op();
+        DATA_INVARIANT(
+          p.id() == ID_literal, "assumed property must be G literal");
+        auto l = to_literal_expr(p).get_literal();
         constraints_BDDs.push_back(aig2bdd(l, BDDs));
       }
     }

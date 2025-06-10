@@ -7,127 +7,11 @@ Author: Daniel Kroening, kroening@kroening.com
 \*******************************************************************/
 
 #include "expr2smv.h"
+#include "expr2smv_class.h"
 
-#include <util/lispexpr.h>
-#include <util/lispirep.h>
-#include <util/namespace.h>
-#include <util/std_expr.h>
-#include <util/symbol.h>
+#include <util/mathematical_types.h>
 
-class expr2smvt
-{
-public:
-  explicit expr2smvt(const namespacet &__ns) : ns(__ns)
-  {
-  }
-
-protected:
-  // In NuSMV 2.6., ! (not)  has a high precedence (above ::), whereas
-  // in the CMU SMV implementation it has the same as other boolean operators.
-  // We use the CMU SMV precedence for !.
-  // Like CMU SMV, we give the same precedence to -> and <->, to avoid ambiguity.
-  // Note that the precedence of mod in the CMU SMV differs from NuSMV's.
-  // We use NuSMV's.
-  enum class precedencet
-  {
-    MAX = 16,
-    INDEX = 15,   // [ ] , [ : ]
-    CONCAT = 14,  // ::
-    UMINUS = 13,  // - (unary minus)
-    MULT = 12,    // * / mod
-    PLUS = 11,    // + -
-    SHIFT = 10,   // << >>
-    UNION = 9,    // union
-    IN = 8,       // in
-    REL = 7,      // = != < > <= >=
-    TEMPORAL = 6, // AX, AF, etc.
-    NOT = 5,      // !
-    AND = 4,      // &
-    OR = 3,       // | xor xnor
-    IF = 2,       // (• ? • : •)
-    IFF = 1,      // <->
-    IMPLIES = 1   // ->
-  };
-
-  /*
-   From http://www.cs.cmu.edu/~modelcheck/smv/smvmanual.ps
-
-  The order of precedence from high to low is
-    * /
-    + -
-    mod
-    = != < > <= >=
-    !
-    &
-    |
-    -> <->
-  */
-
-public:
-  bool convert_nondet_choice(
-    const exprt &src,
-    std::string &dest,
-    precedencet precedence);
-
-  bool convert_binary(
-    const exprt &src,
-    std::string &dest,
-    const std::string &symbol,
-    precedencet precedence);
-
-  bool convert_rtctl(
-    const ternary_exprt &src,
-    std::string &dest,
-    const std::string &symbol,
-    precedencet precedence);
-
-  bool convert_rtctl(
-    const multi_ary_exprt &src,
-    std::string &dest,
-    const std::string &symbol1,
-    const std::string &symbol2,
-    precedencet precedence);
-
-  bool convert_unary(
-    const unary_exprt &,
-    std::string &dest,
-    const std::string &symbol,
-    precedencet precedence);
-
-  bool
-  convert_index(const index_exprt &, std::string &dest, precedencet precedence);
-
-  bool convert(const exprt &src, std::string &dest, precedencet &precedence);
-
-  bool convert_if(const if_exprt &, std::string &dest, precedencet precedence);
-
-  bool convert(const exprt &src, std::string &dest);
-
-  bool convert_symbol(
-    const symbol_exprt &,
-    std::string &dest,
-    precedencet &precedence);
-
-  bool convert_next_symbol(
-    const exprt &src,
-    std::string &dest,
-    precedencet &precedence);
-
-  bool convert_constant(
-    const exprt &src,
-    std::string &dest,
-    precedencet &precedence);
-
-  bool convert_cond(const exprt &src, std::string &dest);
-
-  bool
-  convert_norep(const exprt &src, std::string &dest, precedencet &precedence);
-
-  bool convert(const typet &src, std::string &dest);
-
-protected:
-  const namespacet &ns;
-};
+#include "smv_expr.h"
 
 /*******************************************************************\
 
@@ -141,12 +25,9 @@ Function: expr2smvt::convert_nondet_choice
 
 \*******************************************************************/
 
-bool expr2smvt::convert_nondet_choice(
-  const exprt &src,
-  std::string &dest,
-  precedencet precedence)
+expr2smvt::resultt expr2smvt::convert_nondet_choice(const exprt &src)
 {
-  dest="{ ";
+  std::string dest = "{ ";
 
   bool first=true;
 
@@ -157,13 +38,11 @@ bool expr2smvt::convert_nondet_choice(
     else
       dest+=", ";
 
-    std::string tmp;
-    if(convert(*it, tmp)) return true;
-    dest+=tmp;
+    dest += convert_rec(*it).s;
   }
 
   dest+=" }";
-  return false;
+  return {precedencet::MAX, std::move(dest)};
 }
 
 /*******************************************************************\
@@ -178,19 +57,15 @@ Function: expr2smvt::convert_cond
 
 \*******************************************************************/
 
-bool expr2smvt::convert_cond(
-  const exprt &src,
-  std::string &dest)
+expr2smvt::resultt expr2smvt::convert_cond(const exprt &src)
 {
-  dest="case ";
+  std::string dest = "case ";
 
   bool condition=true;
 
   forall_operands(it, src)
   {
-    std::string tmp;
-    if(convert(*it, tmp)) return true;
-    dest+=tmp;
+    dest += convert_rec(*it).s;
 
     if(condition)
       dest+=": ";
@@ -201,7 +76,7 @@ bool expr2smvt::convert_cond(
   }
 
   dest+="esac";
-  return false;
+  return {precedencet::MAX, std::move(dest)};
 }
 
 /*******************************************************************\
@@ -216,16 +91,69 @@ Function: expr2smvt::convert_binary
 
 \*******************************************************************/
 
-bool expr2smvt::convert_binary(
+expr2smvt::resultt expr2smvt::convert_binary(
+  const binary_exprt &src,
+  const std::string &symbol,
+  precedencet precedence)
+{
+  std::string dest;
+
+  {
+    // lhs
+    auto lhs_rec = convert_rec(src.lhs());
+
+    if(precedence >= lhs_rec.p)
+      dest += '(';
+
+    dest += lhs_rec.s;
+
+    if(precedence >= lhs_rec.p)
+      dest += ')';
+  }
+
+  dest += ' ';
+  dest += symbol;
+  dest += ' ';
+
+  {
+    // rhs
+    auto rhs_rec = convert_rec(src.rhs());
+
+    if(precedence >= rhs_rec.p)
+      dest += '(';
+
+    dest += rhs_rec.s;
+
+    if(precedence >= rhs_rec.p)
+      dest += ')';
+  }
+
+  return {precedence, std::move(dest)};
+}
+
+/*******************************************************************\
+
+Function: expr2smvt::convert_binary_associative
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+expr2smvt::resultt expr2smvt::convert_binary_associative(
   const exprt &src,
-  std::string &dest,
   const std::string &symbol,
   precedencet precedence)
 {
   if(src.operands().size()<2)
-    return convert_norep(src, dest, precedence);
+    return convert_norep(src);
 
   bool first=true;
+
+  std::string dest;
 
   forall_operands(it, src)
   {
@@ -238,17 +166,179 @@ bool expr2smvt::convert_binary(
       dest+=' ';
     }
 
-    std::string op;
-    precedencet p;
+    auto op_rec = convert_rec(*it);
 
-    if(convert(*it, op, p)) return true;
+    // clang-format off
+    bool use_parentheses =
+        src.id() == it->id() ? false
+      : precedence >= op_rec.p;
+    // clang-format on
 
-    if(precedence>p) dest+='(';
-    dest+=op;
-    if(precedence>p) dest+=')';
+    if(use_parentheses)
+      dest += '(';
+
+    dest += op_rec.s;
+
+    if(use_parentheses)
+      dest += ')';
   }
 
-  return false;
+  return {precedence, std::move(dest)};
+}
+
+/*******************************************************************\
+
+Function: expr2smvt::convert_function_application
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+expr2smvt::resultt expr2smvt::convert_function_application(
+  const std::string &symbol,
+  const exprt &src)
+{
+  bool first = true;
+
+  std::string dest = symbol + '(';
+
+  for(auto &op : src.operands())
+  {
+    if(first)
+      first = false;
+    else
+    {
+      dest += ',';
+      dest += ' ';
+    }
+
+    auto op_rec = convert_rec(op);
+    dest += op_rec.s;
+  }
+
+  return {precedencet::MAX, dest + ')'};
+}
+
+/*******************************************************************\
+
+Function: expr2smvt::convert_typecast
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+expr2smvt::resultt expr2smvt::convert_typecast(const typecast_exprt &expr)
+{
+  // typecasts can repesent a variety of functions
+  auto &src_type = expr.op().type();
+  auto &dest_type = expr.type();
+
+  if(src_type.id() == ID_unsignedbv && dest_type.id() == ID_signedbv)
+  {
+    // unsigned to signed
+    auto src_width = to_unsignedbv_type(src_type).get_width();
+    auto dest_width = to_signedbv_type(dest_type).get_width();
+
+    if(src_width == dest_width)
+    {
+      // signedness change only
+      return convert_rec(smv_signed_cast_exprt{expr.op(), dest_type});
+    }
+    else if(dest_width > src_width)
+    {
+      // Signedness _and_ width change. First go to signed, then extend.
+      return convert_rec(smv_extend_exprt{
+        smv_signed_cast_exprt{expr.op(), signedbv_typet{src_width}},
+        dest_width - src_width,
+        dest_type});
+    }
+    else
+    {
+      // First shrink, then go signed.
+      return convert_rec(smv_signed_cast_exprt{
+        smv_resize_exprt{expr.op(), dest_width, unsignedbv_typet{dest_width}},
+        dest_type});
+    }
+  }
+  else if(src_type.id() == ID_signedbv && dest_type.id() == ID_unsignedbv)
+  {
+    // signed to unsigned
+    auto src_width = to_signedbv_type(src_type).get_width();
+    auto dest_width = to_unsignedbv_type(dest_type).get_width();
+
+    if(
+      to_signedbv_type(src_type).get_width() ==
+      to_unsignedbv_type(dest_type).get_width())
+    {
+      // signedness change only
+      return convert_rec(smv_unsigned_cast_exprt{expr.op(), dest_type});
+    }
+    else if(dest_width > src_width)
+    {
+      // Signedness _and_ width change.
+      // First enlarge, then go unsigned.
+      return convert_rec(smv_unsigned_cast_exprt{
+        smv_extend_exprt{
+          expr.op(), dest_width - src_width, signedbv_typet{dest_width}},
+        dest_type});
+    }
+    else
+    {
+      // First go unsigned, then shrink
+      return convert_rec(smv_resize_exprt{
+        smv_unsigned_cast_exprt{expr.op(), unsignedbv_typet{src_width}},
+        dest_width,
+        dest_type});
+    }
+  }
+  else if(src_type.id() == ID_signedbv && dest_type.id() == ID_signedbv)
+  {
+    // signed to signed, width change.
+    auto src_width = to_signedbv_type(src_type).get_width();
+    auto dest_width = to_signedbv_type(dest_type).get_width();
+    if(dest_width > src_width)
+    {
+      // enlarge using extend
+      return convert_rec(
+        smv_extend_exprt{expr.op(), dest_width - src_width, dest_type});
+    }
+    else
+    {
+      // Note that SMV's resize(...) preserves the sign bit, unlike our typecast.
+      // We therefore first go unsigned, then resize, then go signed again.
+      return convert_rec(smv_signed_cast_exprt{
+        smv_resize_exprt{
+          smv_unsigned_cast_exprt{expr.op(), unsignedbv_typet{src_width}},
+          dest_width,
+          unsignedbv_typet{dest_width}},
+        dest_type});
+    }
+  }
+  else if(src_type.id() == ID_unsignedbv && dest_type.id() == ID_unsignedbv)
+  {
+    // Unsigned to unsigned, width change. Use extend when enlarging.
+    auto src_width = to_unsignedbv_type(src_type).get_width();
+    auto dest_width = to_unsignedbv_type(dest_type).get_width();
+    if(dest_width > src_width)
+    {
+      return convert_rec(
+        smv_extend_exprt{expr.op(), dest_width - src_width, dest_type});
+    }
+    else
+    {
+      return convert_rec(smv_resize_exprt{expr.op(), dest_width, dest_type});
+    }
+  }
+  else
+    return convert_norep(expr);
 }
 
 /*******************************************************************\
@@ -263,18 +353,15 @@ Function: expr2smvt::convert_rtctl
 
 \*******************************************************************/
 
-bool expr2smvt::convert_rtctl(
+expr2smvt::resultt expr2smvt::convert_rtctl(
   const ternary_exprt &src,
-  std::string &dest,
   const std::string &symbol,
   precedencet precedence)
 {
-  std::string op0, op1, op2;
-  convert(src.op0(), op0);
-  convert(src.op1(), op1);
-  convert(src.op2(), op2);
-  dest = symbol + ' ' + op0 + ".." + op1 + ' ' + op2;
-  return false;
+  std::string op0 = convert_rec(src.op0()).s;
+  std::string op1 = convert_rec(src.op1()).s;
+  std::string op2 = convert_rec(src.op2()).s;
+  return {precedence, symbol + ' ' + op0 + ".." + op1 + ' ' + op2};
 }
 
 /*******************************************************************\
@@ -289,21 +376,20 @@ Function: expr2smvt::convert_rtctl
 
 \*******************************************************************/
 
-bool expr2smvt::convert_rtctl(
+expr2smvt::resultt expr2smvt::convert_rtctl(
   const multi_ary_exprt &src,
-  std::string &dest,
   const std::string &symbol1,
   const std::string &symbol2,
   precedencet precedence)
 {
-  std::string op0, op1, op2, op3;
-  convert(src.op0(), op0);
-  convert(src.op1(), op1);
-  convert(src.op2(), op2);
-  convert(src.op3(), op3);
-  dest = symbol1 + '[' + op0 + ' ' + symbol2 + ' ' + op1 + ".." + op2 + ' ' +
-         op3 + ']';
-  return false;
+  std::string op0 = convert_rec(src.op0()).s;
+  std::string op1 = convert_rec(src.op1()).s;
+  std::string op2 = convert_rec(src.op2()).s;
+  std::string op3 = convert_rec(src.op3()).s;
+  return {
+    precedence,
+    symbol1 + '[' + op0 + ' ' + symbol2 + ' ' + op1 + ".." + op2 + ' ' + op3 +
+      ']'};
 }
 
 /*******************************************************************\
@@ -318,24 +404,36 @@ Function: expr2smvt::convert_unary
 
 \*******************************************************************/
 
-bool expr2smvt::convert_unary(
+expr2smvt::resultt expr2smvt::convert_unary(
   const unary_exprt &src,
-  std::string &dest,
   const std::string &symbol,
   precedencet precedence)
 {
-  std::string op;
-  precedencet p;
+  auto &op = src.op();
 
-  if(convert(src.op(), op, p))
-    return true;
+  auto op_rec = convert_rec(op);
 
-  dest+=symbol;
-  if(precedence>p) dest+='(';
-  dest+=op;
-  if(precedence>p) dest+=')';
+  // We special-case negation (!), since the precedence
+  // of this operator changed between CMU SMV and NuSMV.
 
-  return false;
+  // clang-format off
+  bool parentheses =
+      op.operands().size() == 1 ? false
+    : src.id() == ID_not        ? true
+    : precedence >= op_rec.p;
+  // clang-format on
+
+  std::string dest = symbol;
+
+  if(parentheses)
+    dest += '(';
+
+  dest += op_rec.s;
+
+  if(parentheses)
+    dest += ')';
+
+  return {precedence, std::move(dest)};
 }
 
 /*******************************************************************\
@@ -350,27 +448,26 @@ Function: expr2smvt::convert_index
 
 \*******************************************************************/
 
-bool expr2smvt::convert_index(
-  const index_exprt &src,
-  std::string &dest,
-  precedencet precedence)
+expr2smvt::resultt
+expr2smvt::convert_index(const index_exprt &src, precedencet precedence)
 {
-  std::string op;
-  precedencet p;
+  auto op0_rec = convert_rec(src.op0());
 
-  if(convert(src.op0(), op, p)) return true;
+  std::string dest;
 
-  if(precedence>p) dest+='(';
-  dest+=op;
-  if(precedence>p) dest+=')';
+  if(precedence > op0_rec.p)
+    dest += '(';
+  dest += op0_rec.s;
+  if(precedence > op0_rec.p)
+    dest += ')';
 
-  if(convert(src.op1(), op, p)) return true;
+  auto op1_rec = convert_rec(src.op1());
 
   dest+='[';
-  dest+=op;
+  dest += op1_rec.s;
   dest+=']';
 
-  return false;
+  return {precedence, std::move(dest)};
 }
 
 /*******************************************************************\
@@ -385,40 +482,34 @@ Function: expr2smvt::convert_if
 
 \*******************************************************************/
 
-bool expr2smvt::convert_if(
-  const if_exprt &src,
-  std::string &dest,
-  precedencet precedence)
+expr2smvt::resultt
+expr2smvt::convert_if(const if_exprt &src, precedencet precedence)
 {
-  std::string op;
-  precedencet p;
+  auto cond_rec = convert_rec(src.cond());
 
-  if(convert(src.cond(), op, p))
-    return true;
+  std::string dest;
 
-  if(precedence >= p)
+  if(precedence >= cond_rec.p)
     dest += '(';
-  dest += op;
-  if(precedence >= p)
+  dest += cond_rec.s;
+  if(precedence >= cond_rec.p)
     dest += ')';
   dest += '?';
 
-  if(convert(src.true_case(), op, p))
-    return true;
+  auto true_case_rec = convert_rec(src.true_case());
 
-  dest += op;
+  dest += true_case_rec.s;
   dest += ':';
 
-  if(convert(src.false_case(), op, p))
-    return true;
+  auto false_case_rec = convert_rec(src.false_case());
 
-  if(precedence > p)
+  if(precedence > false_case_rec.p)
     dest += '(';
-  dest += op;
-  if(precedence > p)
+  dest += false_case_rec.s;
+  if(precedence > false_case_rec.p)
     dest += ')';
 
-  return false;
+  return {precedence, std::move(dest)};
 }
 
 /*******************************************************************\
@@ -433,14 +524,9 @@ Function: expr2smvt::convert_norep
 
 \*******************************************************************/
 
-bool expr2smvt::convert_norep(
-  const exprt &src,
-  std::string &dest,
-  precedencet &precedence)
+expr2smvt::resultt expr2smvt::convert_norep(const exprt &src)
 {
-  precedence = precedencet::MAX;
-  dest=src.pretty();
-  return false;
+  return {precedencet::MAX, src.pretty()};
 }
 
 /*******************************************************************\
@@ -455,18 +541,11 @@ Function: expr2smvt::convert_symbol
 
 \*******************************************************************/
 
-bool expr2smvt::convert_symbol(
-  const symbol_exprt &src,
-  std::string &dest,
-  precedencet &precedence)
+expr2smvt::resultt expr2smvt::convert_symbol(const symbol_exprt &src)
 {
-  precedence = precedencet::MAX;
-
   auto &symbol = ns.lookup(src);
 
-  dest = id2string(symbol.display_name());
-
-  return false;
+  return {precedencet::MAX, id2string(symbol.display_name())};
 }
 
 /*******************************************************************\
@@ -481,18 +560,12 @@ Function: expr2smvt::convert_next_symbol
 
 \*******************************************************************/
 
-bool expr2smvt::convert_next_symbol(
-  const exprt &src,
-  std::string &dest,
-  precedencet &precedence)
+expr2smvt::resultt expr2smvt::convert_next_symbol(const exprt &src)
 {
-  std::string tmp;
-  convert_symbol(
-    symbol_exprt{src.get(ID_identifier), src.type()}, tmp, precedence);
+  auto tmp_rec =
+    convert_symbol(symbol_exprt{src.get(ID_identifier), src.type()});
 
-  dest="next("+tmp+")";
-
-  return false;
+  return {precedencet::MAX, "next(" + tmp_rec.s + ")"};
 }
 
 /*******************************************************************\
@@ -507,15 +580,11 @@ Function: expr2smvt::convert_constant
 
 \*******************************************************************/
 
-bool expr2smvt::convert_constant(
-  const exprt &src,
-  std::string &dest,
-  precedencet &precedence)
+expr2smvt::resultt expr2smvt::convert_constant(const constant_exprt &src)
 {
-  precedence = precedencet::MAX;
+  const typet &type = src.type();
 
-  const typet &type=src.type();
-  const std::string &value=src.get_string(ID_value);
+  std::string dest;
 
   if(type.id()==ID_bool)
   {
@@ -528,16 +597,28 @@ bool expr2smvt::convert_constant(
           type.id()==ID_natural ||
           type.id()==ID_range ||
           type.id()==ID_enumeration)
-    dest=value;
+  {
+    dest = id2string(src.get_value());
+  }
+  else if(type.id() == ID_signedbv || type.id() == ID_unsignedbv)
+  {
+    auto value_int = numeric_cast_v<mp_integer>(src);
+    auto value_abs = value_int < 0 ? -value_int : value_int;
+    auto minus = value_int < 0 ? "-" : "";
+    auto sign_specifier = type.id() == ID_signedbv ? 's' : 'u';
+    auto word_width = to_bitvector_type(type).width();
+    dest = minus + std::string("0") + sign_specifier + 'd' +
+           std::to_string(word_width) + '_' + integer2string(value_abs);
+  }
   else
-    return convert_norep(src, dest, precedence);
+    return convert_norep(src);
 
-  return false;
+  return {precedencet::MAX, std::move(dest)};
 }
 
 /*******************************************************************\
 
-Function: expr2smvt::convert
+Function: expr2smvt::convert_rec
 
   Inputs:
 
@@ -547,84 +628,85 @@ Function: expr2smvt::convert
 
 \*******************************************************************/
 
-bool expr2smvt::convert(
-  const exprt &src,
-  std::string &dest,
-  precedencet &precedence)
+expr2smvt::resultt expr2smvt::convert_rec(const exprt &src)
 {
-  precedence = precedencet::MAX;
-
   if(src.id()==ID_plus)
-    return convert_binary(src, dest, "+", precedence = precedencet::PLUS);
+    return convert_binary_associative(src, "+", precedencet::PLUS);
 
   else if(src.id()==ID_minus)
-  {
-    if(src.operands().size()<2)
-      return convert_norep(src, dest, precedence);
-    else
-      return convert_binary(src, dest, "-", precedence = precedencet::PLUS);
-  }
+    return convert_binary_associative(src, "-", precedencet::PLUS);
 
   else if(src.id()==ID_unary_minus)
   {
     if(src.operands().size()!=1)
-      return convert_norep(src, dest, precedence);
+      return convert_norep(src);
     else
-      return convert_unary(
-        to_unary_minus_expr(src), dest, "-", precedence = precedencet::UMINUS);
+      return convert_unary(to_unary_minus_expr(src), "-", precedencet::UMINUS);
   }
 
   else if(src.id()==ID_index)
-    return convert_index(
-      to_index_expr(src), dest, precedence = precedencet::INDEX);
+    return convert_index(to_index_expr(src), precedencet::INDEX);
 
-  else if(src.id()==ID_mult || src.id()==ID_div)
-    return convert_binary(
-      src, dest, src.id_string(), precedence = precedencet::MULT);
+  else if(src.id() == ID_mult)
+    return convert_binary_associative(src, src.id_string(), precedencet::MULT);
+
+  else if(src.id() == ID_div)
+    return convert_binary(to_div_expr(src), src.id_string(), precedencet::MULT);
+
+  else if(src.id() == ID_mod)
+    return convert_binary(to_mod_expr(src), src.id_string(), precedencet::MULT);
 
   else if(src.id() == ID_smv_setin)
-    return convert_binary(src, dest, "in", precedence = precedencet::IN);
+    return convert_binary(to_binary_expr(src), "in", precedencet::IN);
 
   else if(src.id() == ID_smv_setnotin)
-    return convert_binary(src, dest, "notin", precedence = precedencet::IN);
+    return convert_binary(to_binary_expr(src), "notin", precedencet::IN);
 
   else if(src.id() == ID_smv_union)
-    return convert_binary(src, dest, "union", precedence = precedencet::UNION);
+    return convert_binary(to_binary_expr(src), "union", precedencet::UNION);
 
   else if(src.id()==ID_lt || src.id()==ID_gt ||
           src.id()==ID_le || src.id()==ID_ge)
     return convert_binary(
-      src, dest, src.id_string(), precedence = precedencet::REL);
+      to_binary_expr(src), src.id_string(), precedencet::REL);
 
   else if(src.id()==ID_equal)
   {
-    if(src.get_bool(ID_C_smv_iff))
-      return convert_binary(src, dest, "<->", precedence = precedencet::IFF);
+    auto &equal_expr = to_equal_expr(src);
+
+    if(equal_expr.get_bool(ID_C_smv_iff))
+      return convert_binary(equal_expr, "<->", precedencet::IFF);
     else
-      return convert_binary(src, dest, "=", precedence = precedencet::REL);
+      return convert_binary(equal_expr, "=", precedencet::REL);
   }
 
   else if(src.id()==ID_notequal)
-    return convert_binary(src, dest, "!=", precedence = precedencet::REL);
+    return convert_binary(to_notequal_expr(src), "!=", precedencet::REL);
 
   else if(src.id()==ID_not)
-    return convert_unary(
-      to_not_expr(src), dest, "!", precedence = precedencet::NOT);
+    return convert_unary(to_not_expr(src), "!", precedencet::NOT);
 
-  else if(src.id()==ID_and)
-    return convert_binary(src, dest, "&", precedence = precedencet::AND);
+  else if(src.id() == ID_and || src.id() == ID_bitand)
+    return convert_binary_associative(src, "&", precedencet::AND);
 
-  else if(src.id()==ID_or)
-    return convert_binary(src, dest, "|", precedence = precedencet::OR);
+  else if(src.id() == ID_or || src.id() == ID_bitor)
+    return convert_binary_associative(src, "|", precedencet::OR);
 
-  else if(src.id()==ID_implies)
-    return convert_binary(src, dest, "->", precedence = precedencet::IMPLIES);
+  else if(src.id() == ID_implies || src.id() == ID_smv_bitimplies)
+    return convert_binary(to_binary_expr(src), "->", precedencet::IMPLIES);
 
-  else if(src.id() == ID_xor)
-    return convert_binary(src, dest, "xor", precedence = precedencet::OR);
+  else if(src.id() == ID_xor || src.id() == ID_bitxor)
+    return convert_binary_associative(src, "xor", precedencet::OR);
 
-  else if(src.id() == ID_xnor)
-    return convert_binary(src, dest, "xnor", precedence = precedencet::OR);
+  else if(src.id() == ID_xnor || src.id() == ID_bitxnor)
+  {
+    auto &binary_expr = to_binary_expr(src);
+
+    if(src.get_bool(ID_C_smv_iff))
+      return convert_binary(binary_expr, "<->", precedencet::IFF);
+    else
+      return convert_binary(binary_expr, "xnor", precedencet::OR);
+  }
 
   else if(
     src.id() == ID_AG || src.id() == ID_EG || src.id() == ID_AF ||
@@ -632,10 +714,7 @@ bool expr2smvt::convert(
     src.id() == ID_G || src.id() == ID_F || src.id() == ID_X)
   {
     return convert_unary(
-      to_unary_expr(src),
-      dest,
-      src.id_string() + " ",
-      precedence = precedencet::TEMPORAL);
+      to_unary_expr(src), src.id_string() + " ", precedencet::TEMPORAL);
   }
 
   else if(
@@ -644,18 +723,16 @@ bool expr2smvt::convert(
   {
     return convert_unary(
       to_unary_expr(src),
-      dest,
       std::string(src.id_string(), 4, std::string::npos) + " ",
-      precedence = precedencet::TEMPORAL);
+      precedencet::TEMPORAL);
   }
 
   else if(src.id() == ID_smv_bounded_H || src.id() == ID_smv_bounded_O)
   {
     return convert_unary(
       to_unary_expr(src),
-      dest,
       std::string(src.id_string(), 12, std::string::npos) + " ",
-      precedence = precedencet::TEMPORAL);
+      precedencet::TEMPORAL);
   }
 
   else if(
@@ -663,10 +740,7 @@ bool expr2smvt::convert(
     src.id() == ID_ER || src.id() == ID_U)
   {
     return convert_binary(
-      to_binary_expr(src),
-      dest,
-      src.id_string(),
-      precedence = precedencet::TEMPORAL);
+      to_binary_expr(src), src.id_string(), precedencet::TEMPORAL);
   }
 
   else if(
@@ -675,54 +749,50 @@ bool expr2smvt::convert(
   {
     return convert_rtctl(
       to_ternary_expr(src),
-      dest,
       std::string(src.id_string(), 4, std::string::npos),
-      precedence = precedencet::TEMPORAL);
+      precedencet::TEMPORAL);
   }
 
   else if(src.id() == ID_smv_EBU || src.id() == ID_smv_ABU)
   {
     return convert_rtctl(
       to_multi_ary_expr(src),
-      dest,
       std::string(src.id_string(), 4, 1),
       std::string(src.id_string(), 5, std::string::npos),
-      precedence = precedencet::TEMPORAL);
+      precedencet::TEMPORAL);
   }
 
   else if(src.id() == ID_R)
   {
     // LTL release is "V" in NuSMV
-    return convert_binary(
-      to_binary_expr(src), dest, "V", precedence = precedencet::TEMPORAL);
+    return convert_binary(to_binary_expr(src), "V", precedencet::TEMPORAL);
   }
 
   else if(src.id() == ID_smv_S || src.id() == ID_smv_T)
   {
     return convert_binary(
       to_binary_expr(src),
-      dest,
       std::string(src.id_string(), 4, std::string::npos),
-      precedence = precedencet::TEMPORAL);
+      precedencet::TEMPORAL);
   }
 
   else if(src.id() == ID_if)
-    return convert_if(to_if_expr(src), dest, precedencet::IF);
+    return convert_if(to_if_expr(src), precedencet::IF);
 
   else if(src.id()==ID_symbol)
-    return convert_symbol(to_symbol_expr(src), dest, precedence);
+    return convert_symbol(to_symbol_expr(src));
 
   else if(src.id()==ID_next_symbol)
-    return convert_next_symbol(src, dest, precedence);
+    return convert_next_symbol(src);
 
   else if(src.id()==ID_constant)
-    return convert_constant(src, dest, precedence);
+    return convert_constant(to_constant_expr(src));
 
   else if(src.id()=="smv_nondet_choice")
-    return convert_nondet_choice(src, dest, precedence);
+    return convert_nondet_choice(src);
 
   else if(src.id() == ID_constraint_select_one)
-    return convert_nondet_choice(src, dest, precedence);
+    return convert_nondet_choice(src);
 
   else if(src.id()==ID_nondet_bool)
   {
@@ -730,34 +800,47 @@ bool expr2smvt::convert(
     nondet_choice_expr.operands().clear();
     nondet_choice_expr.operands().push_back(false_exprt());
     nondet_choice_expr.operands().push_back(true_exprt());
-    return convert_nondet_choice(nondet_choice_expr, dest, precedence);
+    return convert_nondet_choice(nondet_choice_expr);
   }
 
   else if(src.id()==ID_cond)
-    return convert_cond(src, dest);
+    return convert_cond(src);
 
-  else // no SMV language expression for internal representation 
-    return convert_norep(src, dest, precedence);
+  else if(src.id() == ID_concatenation)
+  {
+    return convert_binary_associative(
+      to_binary_expr(src), "::", precedencet::CONCAT);
+  }
 
-  return false;
-}
+  else if(src.id() == ID_shl)
+  {
+    return convert_binary(to_binary_expr(src), "<<", precedencet::SHIFT);
+  }
 
-/*******************************************************************\
+  else if(src.id() == ID_lshr || src.id() == ID_ashr)
+  {
+    return convert_binary(to_binary_expr(src), ">>", precedencet::SHIFT);
+  }
 
-Function: expr2smvt::convert
+  else if(src.id() == ID_smv_extend)
+    return convert_function_application("extend", src);
 
-  Inputs:
+  else if(src.id() == ID_smv_resize)
+    return convert_function_application("resize", src);
 
- Outputs:
+  else if(src.id() == ID_smv_signed_cast)
+    return convert_function_application("signed", src);
 
- Purpose:
+  else if(src.id() == ID_smv_unsigned_cast)
+    return convert_function_application("unsigned", src);
 
-\*******************************************************************/
+  else if(src.id() == ID_typecast)
+  {
+    return convert_typecast(to_typecast_expr(src));
+  }
 
-bool expr2smvt::convert(const exprt &src, std::string &dest)
-{
-  precedencet precedence;
-  return convert(src, dest, precedence);
+  else // no SMV language expression for internal representation
+    return convert_norep(src);
 }
 
 /*******************************************************************\
@@ -772,10 +855,10 @@ Function: expr2smv
 
 \*******************************************************************/
 
-bool expr2smv(const exprt &expr, std::string &code, const namespacet &ns)
+std::string expr2smv(const exprt &expr, const namespacet &ns)
 {
-  expr2smvt expr2smv(ns);
-  return expr2smv.convert(expr, code);
+  expr2smvt expr2smv{ns};
+  return expr2smv.convert(expr);
 }
 
 /*******************************************************************\
@@ -790,24 +873,22 @@ Function: type2smv
 
 \*******************************************************************/
 
-bool type2smv(const typet &type, std::string &code, const namespacet &ns)
+std::string type2smv(const typet &type, const namespacet &ns)
 {
   if(type.id()==ID_bool)
-    code="boolean";
+    return "boolean";
   else if(type.id()==ID_array)
   {
-    std::string tmp;
-    if(type2smv(to_array_type(type).element_type(), tmp, ns))
-      return true;
-    code="array ";
+    std::string code = "array ";
     code+="..";
     code+=" of ";
-    code+=tmp;
+    code += type2smv(to_array_type(type).element_type(), ns);
+    return code;
   }
   else if(type.id()==ID_enumeration)
   {
     const irept::subt &elements=to_enumeration_type(type).elements();
-    code="{ ";
+    std::string code = "{ ";
     bool first=true;
     for(auto &element : elements)
     {
@@ -815,14 +896,15 @@ bool type2smv(const typet &type, std::string &code, const namespacet &ns)
       code += element.id_string();
     }
     code+=" }";
+    return code;
   }
   else if(type.id()==ID_range)
   {
-    code=type.get_string(ID_from)+".."+type.get_string(ID_to);
+    return type.get_string(ID_from) + ".." + type.get_string(ID_to);
   }
   else if(type.id()=="submodule")
   {
-    code=type.get_string(ID_identifier);
+    auto code = type.get_string(ID_identifier);
     const exprt &e=(exprt &)type;
     if(e.has_operands())
     {
@@ -831,15 +913,22 @@ bool type2smv(const typet &type, std::string &code, const namespacet &ns)
       forall_operands(it, e)
       {
         if(first) first=false; else code+=", ";
-        std::string tmp;
-        expr2smv(*it, tmp, ns);
-        code+=tmp;
+        code += expr2smv(*it, ns);
       }
       code+=')';
     }
+    return code;
+  }
+  else if(type.id() == ID_signedbv)
+  {
+    return "signed word[" + std::to_string(to_signedbv_type(type).width()) +
+           ']';
+  }
+  else if(type.id() == ID_unsignedbv)
+  {
+    return "unsigned word[" + std::to_string(to_unsignedbv_type(type).width()) +
+           ']';
   }
   else
-    return true;
-
-  return false;
+    return "no conversion for " + type.id_string();
 }

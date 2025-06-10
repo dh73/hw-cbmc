@@ -23,34 +23,26 @@ Author: Daniel Kroening, dkr@amazon.com
 exprt normalize_pre_sva_non_overlapped_implication(
   sva_non_overlapped_implication_exprt expr)
 {
-  // Same as a->always[1:1] b if lhs is not a sequence.
-  if(!is_SVA_sequence(expr.lhs()))
+  // a|=>b is the same as a->always[1:1] b if lhs is not a proper sequence.
+  if(expr.lhs().id() == ID_sva_boolean)
   {
+    const auto &lhs_cond = to_sva_boolean_expr(expr.lhs()).op();
     auto one = natural_typet{}.one_expr();
     return or_exprt{
-      not_exprt{expr.lhs()}, sva_ranged_always_exprt{one, one, expr.rhs()}};
+      not_exprt{lhs_cond}, sva_ranged_always_exprt{one, one, expr.rhs()}};
   }
   else
     return std::move(expr);
 }
 
-exprt normalize_pre_sva_cycle_delay(sva_cycle_delay_exprt expr)
+exprt normalize_pre_sva_overlapped_implication(
+  sva_overlapped_implication_exprt expr)
 {
-  if(expr.is_unbounded())
+  // a|->b is the same as a->b if lhs is not a proper sequence.
+  if(expr.lhs().id() == ID_sva_boolean)
   {
-    if(
-      expr.from().is_constant() &&
-      numeric_cast_v<mp_integer>(to_constant_expr(expr.from())) == 0)
-    {
-      // ##[0:$] φ --> s_eventually φ
-      return sva_s_eventually_exprt{expr.op()};
-    }
-    else
-    {
-      // ##[i:$] φ --> always[i:i] s_eventually φ
-      return sva_ranged_always_exprt{
-        expr.from(), expr.from(), sva_s_eventually_exprt{expr.op()}};
-    }
+    const auto &lhs_cond = to_sva_boolean_expr(expr.lhs()).op();
+    return implies_exprt{lhs_cond, expr.rhs()};
   }
   else
     return std::move(expr);
@@ -63,6 +55,11 @@ exprt normalize_property_rec(exprt expr)
   {
     expr = normalize_pre_sva_non_overlapped_implication(
       to_sva_non_overlapped_implication_expr(expr));
+  }
+  else if(expr.id() == ID_sva_overlapped_implication)
+  {
+    expr = normalize_pre_sva_overlapped_implication(
+      to_sva_overlapped_implication_expr(expr));
   }
   else if(expr.id() == ID_sva_nexttime)
   {
@@ -86,33 +83,20 @@ exprt normalize_property_rec(exprt expr)
     expr = sva_s_always_exprt{
       nexttime_expr.index(), nexttime_expr.index(), nexttime_expr.op()};
   }
-  else if(expr.id() == ID_sva_cycle_delay)
-  {
-    expr = normalize_pre_sva_cycle_delay(to_sva_cycle_delay_expr(expr));
-  }
-  else if(expr.id() == ID_sva_cycle_delay_plus)
-  {
-    expr = sva_s_nexttime_exprt{
-      sva_s_eventually_exprt{to_sva_cycle_delay_plus_expr(expr).op()}};
-  }
-  else if(expr.id() == ID_sva_cycle_delay_star)
-  {
-    expr = sva_s_eventually_exprt{to_sva_cycle_delay_star_expr(expr).op()};
-  }
-  else if(expr.id() == ID_sva_strong)
-  {
-    expr = to_sva_strong_expr(expr).op();
-  }
-  else if(expr.id() == ID_sva_weak)
-  {
-    expr = to_sva_weak_expr(expr).op();
-  }
 
   // normalize the operands
   for(auto &op : expr.operands())
     op = normalize_property_rec(op); // recursive call
 
   // post-traversal
+  if(expr.id() == ID_R)
+  {
+    if(to_R_expr(expr).lhs().is_false())
+    {
+      // false R ψ ≡ G ψ
+      expr = G_exprt{to_R_expr(expr).rhs()};
+    }
+  }
 
   return expr;
 }
@@ -121,7 +105,7 @@ exprt normalize_property(exprt expr)
 {
   // top-level only
   if(expr.id() == ID_sva_cover)
-    expr = G_exprt{not_exprt{to_sva_cover_expr(expr).op()}};
+    expr = sva_always_exprt{not_exprt{to_sva_cover_expr(expr).op()}};
 
   expr = trivial_sva(expr);
 

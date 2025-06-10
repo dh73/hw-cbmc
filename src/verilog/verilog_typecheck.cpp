@@ -728,6 +728,13 @@ void verilog_typecheckt::check_lhs(
   {
     const symbolt &symbol=ns.lookup(to_symbol_expr(lhs));
 
+    // check for 'const'
+    if(symbol.type.get_bool(ID_C_const))
+    {
+      throw errort().with_location(lhs.source_location())
+        << "assignment to const";
+    }
+
     switch(vassign)
     {
     case A_CONTINUOUS:
@@ -1051,7 +1058,13 @@ void verilog_typecheckt::convert_assert_assume_cover(
   exprt &cond = module_item.condition();
 
   convert_sva(cond);
-  make_boolean(cond);
+  require_sva_property(cond);
+
+  // 1800-2017 16.12.2 Sequence property
+  if(module_item.id() == ID_verilog_cover_property)
+    set_default_sequence_semantics(cond, sva_sequence_semanticst::STRONG);
+  else
+    set_default_sequence_semantics(cond, sva_sequence_semanticst::WEAK);
 
   // We create a symbol for the property.
   // The 'value' of the symbol is set by synthesis.
@@ -1116,7 +1129,13 @@ void verilog_typecheckt::convert_assert_assume_cover(
   exprt &cond = statement.condition();
 
   convert_sva(cond);
-  make_boolean(cond);
+  require_sva_property(cond);
+
+  // 1800-2017 16.12.2 Sequence property
+  if(statement.id() == ID_verilog_cover_property)
+    set_default_sequence_semantics(cond, sva_sequence_semanticst::STRONG);
+  else
+    set_default_sequence_semantics(cond, sva_sequence_semanticst::WEAK);
 
   // We create a symbol for the property.
   // The 'value' is set by synthesis.
@@ -1785,7 +1804,7 @@ void verilog_typecheckt::convert_property_declaration(
   auto full_identifier = hierarchical_identifier(base_name);
 
   convert_sva(declaration.cond());
-  make_boolean(declaration.cond());
+  require_sva_property(declaration.cond());
 
   auto type = bool_typet{};
   type.set(ID_C_verilog_type, ID_verilog_property_declaration);
@@ -1819,11 +1838,11 @@ void verilog_typecheckt::convert_sequence_declaration(
   auto base_name = declaration.base_name();
   auto full_identifier = hierarchical_identifier(base_name);
 
-  convert_sva(declaration.sequence());
+  auto &sequence = declaration.sequence();
+  convert_sva(sequence);
+  require_sva_sequence(sequence);
 
-  auto type = bool_typet{};
-  type.set(ID_C_verilog_type, ID_verilog_sequence_declaration);
-  symbolt symbol{full_identifier, type, mode};
+  symbolt symbol{full_identifier, sequence.type(), mode};
 
   symbol.module = module_identifier;
   symbol.base_name = base_name;

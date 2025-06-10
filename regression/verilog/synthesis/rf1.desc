@@ -1,0 +1,9 @@
+CORE
+rf1.sv
+
+^\[.*\] always 0: REFUTED$
+^EXIT=10$
+^SIGNAL=0$
+--
+^warning: ignoring
+--

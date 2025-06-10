@@ -14,6 +14,7 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/namespace.h>
 #include <util/std_expr.h>
 
+#include "sva_expr.h"
 #include "verilog_typecheck_base.h"
 
 #include <stack>
@@ -66,7 +67,7 @@ protected:
 
   void propagate_type(exprt &expr, const typet &type);
 
-  typet elaborate_type(const typet &);
+  [[nodiscard]] typet elaborate_type(const typet &);
   typet elaborate_package_scope_typedef(const verilog_package_scope_typet &);
   typet convert_enum(const class verilog_enum_typet &);
   array_typet convert_unpacked_array_type(const type_with_subtypet &);
@@ -199,10 +200,15 @@ protected:
     expr = convert_sva_rec(std::move(expr));
   }
 
+  void require_sva_sequence(exprt &);
+  void require_sva_property(exprt &);
+
   [[nodiscard]] exprt convert_sva_rec(exprt);
   [[nodiscard]] exprt convert_unary_sva(unary_exprt);
   [[nodiscard]] exprt convert_binary_sva(binary_exprt);
   [[nodiscard]] exprt convert_ternary_sva(ternary_exprt);
+
+  static void set_default_sequence_semantics(exprt &, sva_sequence_semanticst);
 
   // system functions
   exprt bits(const exprt &);

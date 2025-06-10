@@ -1,1 +1,1 @@
-#define EBMC_VERSION "5.6"
+extern const char *EBMC_VERSION;

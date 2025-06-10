@@ -215,6 +215,36 @@ expr2verilogt::resultt expr2verilogt::convert_sva_sequence_concatenation(
 
 /*******************************************************************\
 
+Function: expr2verilogt::convert_sva_sequence_first_match
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+expr2verilogt::resultt expr2verilogt::convert_sva_sequence_first_match(
+  const sva_sequence_first_match_exprt &src)
+{
+  std::string dest = "first_match(";
+
+  dest += convert_rec(src.lhs()).s;
+
+  if(src.rhs().is_not_nil())
+  {
+    dest += ", ";
+    dest += convert_rec(src.rhs()).s;
+  }
+
+  dest += ')';
+
+  return {verilog_precedencet::MAX, dest};
+}
+
+/*******************************************************************\
+
 Function: expr2verilogt::convert_binary
 
   Inputs:
@@ -367,7 +397,7 @@ expr2verilogt::convert_function(const std::string &name, const exprt &src)
 
   dest+=")";
 
-  return {verilog_precedencet::MIN, dest};
+  return {verilog_precedencet::MAX, dest};
 }
 
 /*******************************************************************\
@@ -430,11 +460,11 @@ expr2verilogt::resultt expr2verilogt::convert_sva_ranged_predicate(
 {
   std::string range_str;
 
-  range_str = "[" + convert(src.lower()) + ':';
-  if(src.upper().id() == ID_infinity)
+  range_str = "[" + convert(src.from()) + ':';
+  if(src.is_unbounded())
     range_str += "$";
   else
-    range_str += convert(src.upper());
+    range_str += convert(src.to());
   range_str += "] ";
 
   auto &src_op = src.op();
@@ -500,10 +530,31 @@ expr2verilogt::resultt expr2verilogt::convert_sva_unary(
   const std::string &name,
   const unary_exprt &src)
 {
-  auto op = convert_rec(src.op());
-  if(op.p == verilog_precedencet::MIN && src.op().operands().size() >= 2)
-    op.s = "(" + op.s + ")";
-  return {verilog_precedencet::MIN, name + " " + op.s};
+  auto &op = src.op();
+
+  std::size_t op_operands = 0;
+
+  if(op.id() == ID_typecast)
+    op_operands = to_typecast_expr(op).op().operands().size();
+  else if(
+    src.op().id() == ID_sva_sequence_property ||
+    src.op().id() == ID_sva_implicit_weak ||
+    src.op().id() == ID_sva_implicit_strong)
+  {
+    op_operands =
+      to_sva_sequence_property_expr_base(op).sequence().operands().size();
+  }
+  else
+    op_operands = op.operands().size();
+
+  auto op_rec = convert_rec(op);
+
+  if(op_rec.p == verilog_precedencet::MIN && op_operands >= 2)
+  {
+    op_rec.s = "(" + op_rec.s + ")";
+  }
+
+  return {verilog_precedencet::MIN, name + " " + op_rec.s};
 }
 
 /*******************************************************************\
@@ -557,7 +608,7 @@ expr2verilogt::resultt expr2verilogt::convert_sva_binary(
 
 /*******************************************************************\
 
-Function: expr2verilogt::convert_sva_binary_repetition
+Function: expr2verilogt::convert_sva_sequence_repetition
 
   Inputs:
 
@@ -567,17 +618,36 @@ Function: expr2verilogt::convert_sva_binary_repetition
 
 \*******************************************************************/
 
-expr2verilogt::resultt expr2verilogt::convert_sva_binary_repetition(
+expr2verilogt::resultt expr2verilogt::convert_sva_sequence_repetition(
   const std::string &name,
-  const binary_exprt &expr)
+  const sva_sequence_repetition_exprt &expr)
 {
-  auto op0 = convert_rec(expr.lhs());
-  if(op0.p == verilog_precedencet::MIN)
-    op0.s = "(" + op0.s + ")";
+  auto op_rec = convert_rec(expr.op());
 
-  auto op1 = convert_rec(expr.rhs());
+  if(op_rec.p == verilog_precedencet::MIN)
+    op_rec.s = "(" + op_rec.s + ")";
 
-  return {verilog_precedencet::MIN, op0.s + " " + name + op1.s + "]"};
+  std::string dest = op_rec.s + " [" + name;
+
+  if(expr.repetitions_given())
+  {
+    if(expr.is_range())
+    {
+      dest += convert_rec(expr.from()).s;
+      dest += ':';
+
+      if(expr.is_unbounded())
+        dest += "$";
+      else
+        dest += convert_rec(expr.to()).s;
+    }
+    else
+      dest += convert_rec(expr.repetitions()).s;
+  }
+
+  dest += ']';
+
+  return {verilog_precedencet::MIN, dest};
 }
 
 /*******************************************************************\
@@ -1516,21 +1586,15 @@ expr2verilogt::resultt expr2verilogt::convert_rec(const exprt &src)
     return convert_binary(
       to_multi_ary_expr(src), "/", precedence = verilog_precedencet::MULT);
 
-  else if(src.id()==ID_lt)
+  else if(
+    src.id() == ID_lt || src.id() == ID_gt || src.id() == ID_le ||
+    src.id() == ID_ge)
+  {
     return convert_binary(
-      to_multi_ary_expr(src), "<", precedence = verilog_precedencet::RELATION);
-
-  else if(src.id()==ID_gt)
-    return convert_binary(
-      to_multi_ary_expr(src), ">", precedence = verilog_precedencet::RELATION);
-
-  else if(src.id()==ID_le)
-    return convert_binary(
-      to_multi_ary_expr(src), "<=", precedence = verilog_precedencet::RELATION);
-
-  else if(src.id()==ID_ge)
-    return convert_binary(
-      to_multi_ary_expr(src), ">=", precedence = verilog_precedencet::RELATION);
+      to_multi_ary_expr(src),
+      id2string(src.id()),
+      precedence = verilog_precedencet::RELATION);
+  }
 
   else if(src.id()==ID_equal)
     return convert_binary(
@@ -1744,13 +1808,27 @@ expr2verilogt::resultt expr2verilogt::convert_rec(const exprt &src)
   else if(src.id() == ID_sva_weak)
     return convert_function("weak", src);
 
+  else if(
+    src.id() == ID_sva_sequence_property ||
+    src.id() == ID_sva_implicit_strong || src.id() == ID_sva_implicit_weak)
+  {
+    return convert_rec(to_sva_sequence_property_expr_base(src).sequence());
+  }
+
+  else if(src.id() == ID_sva_boolean)
+  {
+    // These are invisible
+    return convert_rec(to_sva_boolean_expr(src).op());
+  }
+
   else if(src.id()==ID_sva_sequence_concatenation)
     return convert_sva_sequence_concatenation(
       to_binary_expr(src), precedence = verilog_precedencet::MIN);
     // not sure about precedence
 
   else if(src.id() == ID_sva_sequence_first_match)
-    return convert_function("first_match", src);
+    return convert_sva_sequence_first_match(
+      to_sva_sequence_first_match_expr(src));
 
   else if(src.id() == ID_sva_sequence_intersect)
     return precedence = verilog_precedencet::MIN,
@@ -1781,30 +1859,21 @@ expr2verilogt::resultt expr2verilogt::convert_rec(const exprt &src)
     return precedence = verilog_precedencet::MIN,
            convert_sva_unary("always", to_sva_always_expr(src));
 
-  else if(src.id() == ID_sva_sequence_repetition_star)
-    return precedence = verilog_precedencet::MIN,
-           convert_sva_unary(to_unary_expr(src), "[*]");
-  // not sure about precedence
-
   else if(src.id() == ID_sva_sequence_repetition_plus)
-    return precedence = verilog_precedencet::MIN,
-           convert_sva_unary(to_unary_expr(src), "[+]");
-  // not sure about precedence
+    return convert_sva_sequence_repetition(
+      "+", to_sva_sequence_repetition_plus_expr(src));
 
   else if(src.id() == ID_sva_sequence_non_consecutive_repetition)
-    return precedence = verilog_precedencet::MIN,
-           convert_sva_binary_repetition("[=", to_binary_expr(src));
-  // not sure about precedence
+    return convert_sva_sequence_repetition(
+      "=", to_sva_sequence_non_consecutive_repetition_expr(src));
 
-  else if(src.id() == ID_sva_sequence_consecutive_repetition)
-    return precedence = verilog_precedencet::MIN,
-           convert_sva_binary_repetition("[*", to_binary_expr(src));
-  // not sure about precedence
+  else if(src.id() == ID_sva_sequence_repetition_star)
+    return convert_sva_sequence_repetition(
+      "*", to_sva_sequence_repetition_star_expr(src));
 
   else if(src.id() == ID_sva_sequence_goto_repetition)
-    return precedence = verilog_precedencet::MIN,
-           convert_sva_binary_repetition("[->", to_binary_expr(src));
-  // not sure about precedence
+    return convert_sva_sequence_repetition(
+      "->", to_sva_sequence_goto_repetition_expr(src));
 
   else if(src.id() == ID_sva_ranged_always)
   {
@@ -1924,6 +1993,9 @@ expr2verilogt::resultt expr2verilogt::convert_rec(const exprt &src)
 
   else if(src.id() == ID_verilog_value_range)
     return convert_value_range(to_verilog_value_range_expr(src));
+
+  else if(src.id() == ID_postincrement)
+    return convert_sva_unary(to_unary_expr(src), "++");
 
   else if(
     src.id() == ID_nand || src.id() == ID_nor || src.id() == ID_xnor ||

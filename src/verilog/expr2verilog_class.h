@@ -16,6 +16,8 @@ class sva_abort_exprt;
 class sva_case_exprt;
 class sva_if_exprt;
 class sva_ranged_predicate_exprt;
+class sva_sequence_first_match_exprt;
+class sva_sequence_repetition_exprt;
 
 // Precedences (higher means binds more strongly).
 // Follows Table 11-2 in IEEE 1800-2017.
@@ -135,8 +137,9 @@ protected:
 
   resultt convert_sva_binary(const std::string &name, const binary_exprt &);
 
-  resultt
-  convert_sva_binary_repetition(const std::string &name, const binary_exprt &);
+  resultt convert_sva_sequence_repetition(
+    const std::string &name,
+    const sva_sequence_repetition_exprt &);
 
   resultt convert_sva_abort(const std::string &name, const sva_abort_exprt &);
 
@@ -155,6 +158,9 @@ protected:
 
   resultt
   convert_sva_sequence_concatenation(const binary_exprt &, verilog_precedencet);
+
+  resultt
+  convert_sva_sequence_first_match(const sva_sequence_first_match_exprt &);
 
   resultt convert_function_call(const class function_call_exprt &);
 

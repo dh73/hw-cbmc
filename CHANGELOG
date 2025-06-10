@@ -1,8 +1,24 @@
+# EBMC 5.7
+
+* Verilog: `elsif preprocessor directive
+* LTL/SVA to Buechi with --buechi
+
 # EBMC 5.6
 
+* SystemVerilog: [*] and [+] SVA operators
 * SystemVerilog: typedefs from package scopes
 * SystemVerilog: assignment patterns with keys for structs
+* SystemVerilog: unbased unsigned literals '0, '1, 'x, 'z
+* SystemVerilog: first_match
+* SystemVerilog: [->n] and [=n]
+* SystemVerilog: within
+* SystemVerilog: bugfix for |-> and |=>
+* SystemVerilog: bugfix for SVA sequence and
+* SystemVerilog: strong/weak sequence semantics
+* Verilog: 'dx, 'dz
 * SMV: LTL V operator, xnor operator
+* SMV: word types and operators
+* --smv-word-level outputs the model as word-level SMV
 
 # EBMC 5.5
 

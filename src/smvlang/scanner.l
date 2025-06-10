@@ -176,12 +176,12 @@ void newlocation(YYSTYPE &x)
 [\$A-Za-z_][A-Za-z0-9_\$#-]*	{
                   newstack(yysmvlval);
                   stack_expr(yysmvlval).id(yytext);
-		  return STRING_Token;
+		  return IDENTIFIER_Token;
 		}
 \\[A-Za-z0-9_\$#-]*	{
                   newstack(yysmvlval);
                   stack_expr(yysmvlval).id(yytext);
-		  return QSTRING_Token;
+		  return QIDENTIFIER_Token;
 		}
 [0-9][0-9]*	{
                   newstack(yysmvlval);
@@ -192,7 +192,7 @@ void newlocation(YYSTYPE &x)
                   newstack(yysmvlval);
                   std::string tmp(yytext);
                   stack_expr(yysmvlval).id(std::string(tmp, 1, tmp.size()-2));
-                  return QUOTE_Token;
+                  return STRING_Token;
                 }
 
 "?"		return IF_Token;
@@ -200,9 +200,13 @@ void newlocation(YYSTYPE &x)
 "!"		return NOT_Token;
 "+"		return PLUS_Token;
 "-"		return MINUS_Token;
+"*"		return TIMES_Token;
+"/"		return DIVIDE_Token;
 "|"		return OR_Token;
 "&"		return AND_Token;
 "->"		return IMPLIES_Token;
+">>"		return GTGT_Token;
+"<<"		return LTLT_Token;
 "<->"		return EQUIV_Token;
 "="		return EQUAL_Token;
 "<="		return LE_Token;
@@ -213,6 +217,7 @@ void newlocation(YYSTYPE &x)
 ":="		return BECOMES_Token;
 "."		return DOT_Token;
 ".."		return DOTDOT_Token;
+"::"		return COLONCOLON_Token;
 
 .		return yytext[0];
 

@@ -12,6 +12,14 @@ Author: Daniel Kroening, dkr@amazon.com
 
 #include "temporal_logic.h"
 
+static std::optional<exprt> is_state_predicate(const exprt &expr)
+{
+  if(expr.id() == ID_sva_boolean)
+    return to_sva_boolean_expr(expr).op();
+  else
+    return {};
+}
+
 exprt trivial_sva(exprt expr)
 {
   // pre-traversal
@@ -19,12 +27,12 @@ exprt trivial_sva(exprt expr)
   {
     // Same as regular implication if lhs and rhs are not sequences.
     auto &sva_implication = to_sva_overlapped_implication_expr(expr);
-    if(
-      !is_SVA_sequence(sva_implication.lhs()) &&
-      !is_SVA_sequence(sva_implication.rhs()))
-    {
-      expr = implies_exprt{sva_implication.lhs(), sva_implication.rhs()};
-    }
+
+    auto lhs = is_state_predicate(sva_implication.lhs());
+    auto rhs = is_state_predicate(sva_implication.rhs());
+
+    if(lhs.has_value() && rhs.has_value())
+      expr = implies_exprt{*lhs, *rhs};
   }
   else if(expr.id() == ID_sva_iff)
   {
@@ -38,17 +46,41 @@ exprt trivial_sva(exprt expr)
   }
   else if(expr.id() == ID_sva_and)
   {
-    // Same as a ∧ b if lhs and rhs are not sequences.
     auto &sva_and = to_sva_and_expr(expr);
-    if(!is_SVA_sequence(sva_and.lhs()) && !is_SVA_sequence(sva_and.rhs()))
+
+    // can be sequence or property
+    if(expr.type().id() == ID_verilog_sva_sequence)
+    {
+      // Same as a ∧ b if the expression is not a sequence.
+      auto lhs = is_state_predicate(sva_and.lhs());
+      auto rhs = is_state_predicate(sva_and.rhs());
+
+      if(lhs.has_value() && rhs.has_value())
+        expr = sva_boolean_exprt{and_exprt{*lhs, *rhs}, expr.type()};
+    }
+    else
+    {
       expr = and_exprt{sva_and.lhs(), sva_and.rhs()};
+    }
   }
   else if(expr.id() == ID_sva_or)
   {
-    // Same as a ∧ b if lhs or rhs are not sequences.
     auto &sva_or = to_sva_or_expr(expr);
-    if(!is_SVA_sequence(sva_or.lhs()) && !is_SVA_sequence(sva_or.rhs()))
+
+    // can be sequence or property
+    if(expr.type().id() == ID_verilog_sva_sequence)
+    {
+      // Same as a ∨ b if the expression is not a sequence.
+      auto lhs = is_state_predicate(sva_or.lhs());
+      auto rhs = is_state_predicate(sva_or.rhs());
+
+      if(lhs.has_value() && rhs.has_value())
+        expr = sva_boolean_exprt{or_exprt{*lhs, *rhs}, expr.type()};
+    }
+    else
+    {
       expr = or_exprt{sva_or.lhs(), sva_or.rhs()};
+    }
   }
   else if(expr.id() == ID_sva_not)
   {
@@ -81,7 +113,7 @@ exprt trivial_sva(exprt expr)
   }
   else if(expr.id() == ID_sva_case)
   {
-    expr = to_sva_case_expr(expr).lowering();
+    expr = to_sva_case_expr(expr).lower();
   }
 
   // rewrite the operands, recursively
@@ -89,6 +121,17 @@ exprt trivial_sva(exprt expr)
     op = trivial_sva(op);
 
   // post-traversal
+  if(
+    expr.id() == ID_sva_weak || expr.id() == ID_sva_strong ||
+    expr.id() == ID_sva_implicit_weak || expr.id() == ID_sva_implicit_strong)
+  {
+    // We simplify sequences to boolean expressions, and hence can drop
+    // the sva_sequence_property converter
+    auto &sequence = to_sva_sequence_property_expr_base(expr).sequence();
+    auto pred_opt = is_state_predicate(sequence);
+    if(pred_opt.has_value())
+      return *pred_opt;
+  }
 
   return expr;
 }

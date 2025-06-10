@@ -4,7 +4,9 @@
 SRC = unit_tests.cpp
 
 # Test source files
-SRC += temporal-logic/nnf.cpp \
+SRC += smvlang/expr2smv.cpp \
+       temporal-logic/ltl_sva_to_string.cpp \
+       temporal-logic/nnf.cpp \
        # Empty last line
 
 INCLUDES= -I ../src/ -I . -I $(CPROVER_DIR)/unit -I $(CPROVER_DIR)/src
@@ -16,7 +18,8 @@ include $(CPROVER_DIR)/src/common
 
 CXXFLAGS += -D'LOCAL_IREP_IDS=<hw_cbmc_irep_ids.h>'
 
-OBJ += ../src/temporal-logic/temporal-logic$(LIBEXT)
+OBJ += ../src/smvlang/smvlang$(LIBEXT) \
+       ../src/temporal-logic/temporal-logic$(LIBEXT)
 
 cprover.dir:
 	$(MAKE) $(MAKEARGS) -C ../src

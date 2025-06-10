@@ -257,9 +257,10 @@ property_checker_resultt bit_level_bmc(
       // look up the property in the netlist
       auto netlist_property = netlist.properties.find(property.identifier);
       CHECK_RETURN(netlist_property != netlist.properties.end());
+      CHECK_RETURN(netlist_property->second.has_value());
 
       property.timeframe_literals =
-        ::unwind_property(netlist_property->second, bmc_map);
+        ::unwind_property(netlist_property->second.value(), bmc_map);
 
       if(property.is_assumed())
       {
@@ -440,6 +441,10 @@ property_checker_resultt property_checker(
   ebmc_propertiest &properties,
   message_handlert &message_handler)
 {
+  bool use_heuristic_engine = !cmdline.isset("bdd") && !cmdline.isset("aig") &&
+                              !cmdline.isset("k-induction") &&
+                              !cmdline.isset("ic3") && !cmdline.isset("bound");
+
   auto result = [&]() -> property_checker_resultt
   {
     if(cmdline.isset("bdd") || cmdline.isset("show-bdds"))
@@ -484,7 +489,7 @@ property_checker_resultt property_checker(
   if(result.status == property_checker_resultt::statust::VERIFICATION_RESULT)
   {
     const namespacet ns{transition_system.symbol_table};
-    report_results(cmdline, result, ns, message_handler);
+    report_results(cmdline, use_heuristic_engine, result, ns, message_handler);
   }
 
   return result;

@@ -44,17 +44,18 @@ public:
         "(smt2)(bitwuzla)(boolector)(cvc3)(cvc4)(cvc5)(mathsat)(yices)(z3)"
         "(minisat)(cadical)"
         "(aig)(stop-induction)(stop-minimize)(start):(coverage)(naive)"
-        "(compute-ct)(dot-netlist)(smv-netlist)(vcd):"
+        "(compute-ct)(dot-netlist)(smv-netlist)(smv-word-level)"
+        "(vcd):"
         "(random-traces)(trace-steps):(random-seed):(traces):"
         "(random-trace)(random-waveform)"
         "(bmc-with-assumptions)"
-        "(liveness-to-safety)"
+        "(liveness-to-safety)(buechi)"
         "I:D:(preprocess)(systemverilog)(vl2smv-extensions)"
         "(warn-implicit-nets)",
         argc,
         argv,
         std::string("EBMC ") + EBMC_VERSION),
-      ui_message_handler(cmdline, "EBMC " EBMC_VERSION)
+      ui_message_handler(cmdline, std::string("EBMC ") + EBMC_VERSION)
   {
   }
 

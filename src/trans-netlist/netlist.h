@@ -9,6 +9,8 @@ Author: Daniel Kroening, kroening@kroening.com
 #ifndef CPROVER_TRANS_NETLIST_H
 #define CPROVER_TRANS_NETLIST_H
 
+#include <util/expr.h>
+
 #include "aig.h"
 #include "var_map.h"
 
@@ -36,7 +38,6 @@ public:
   using aigt::print;
   virtual void print(std::ostream &out) const;
   virtual void output_dot(std::ostream &out) const;
-  virtual void output_smv(std::ostream &out) const;
   virtual std::string label(unsigned n) const;
   virtual std::string dot_label(unsigned n) const;
   
@@ -53,29 +54,11 @@ public:
   bvt initial;
   bvt transition;
 
-  struct Gpt
-  {
-    literalt p;
-  };
-
-  struct GFpt
-  {
-    literalt p;
-  };
-
-  struct not_translatedt
-  {
-  };
-
-  using propertyt = std::variant<Gpt, GFpt, not_translatedt>;
-
-  // map from property ID to property netlist nodes
-  using propertiest = std::map<irep_idt, propertyt>;
+  // Map from property ID to a netlist property,
+  // which uses literal_exprt.
+  // Maps to {} if translation was not possible.
+  using propertiest = std::map<irep_idt, std::optional<exprt>>;
   propertiest properties;
-
-protected:
-  static std::string id2smv(const irep_idt &id);
-  void print_smv(std::ostream &out, literalt l) const;
 };
 
 #endif

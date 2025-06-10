@@ -17,14 +17,15 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/std_expr.h>
 
 #include <solvers/flattening/boolbv_width.h>
+#include <solvers/prop/literal_expr.h>
 #include <temporal-logic/ctl.h>
 #include <temporal-logic/ltl.h>
 #include <temporal-logic/temporal_logic.h>
 #include <verilog/sva_expr.h>
 
 #include "aig_prop.h"
-#include "instantiate_netlist.h"
 #include "netlist.h"
+#include "netlist_boolbv.h"
 
 #include <algorithm>
 
@@ -46,7 +47,9 @@ public:
     : messaget(_message_handler),
       symbol_table(_symbol_table),
       ns(_symbol_table),
-      dest(_dest)
+      dest(_dest),
+      aig_prop(dest, _message_handler),
+      solver(ns, aig_prop, _message_handler, dest.var_map)
   {
   }
 
@@ -59,7 +62,9 @@ protected:
   symbol_table_baset &symbol_table;
   const namespacet ns;
   netlistt &dest;
-  
+  aig_prop_constraintt aig_prop;
+  netlist_boolbvt solver;
+
   literalt new_input();
   std::size_t input_counter = 0;
   irep_idt mode;
@@ -132,17 +137,15 @@ protected:
     std::size_t lhs_from, std::size_t lhs_to,
     rhs_entryt &rhs_entry);
 
-  literalt convert_rhs(const rhst &rhs, propt &prop);
+  literalt convert_rhs(const rhst &);
 
-  void finalize_lhs(lhs_mapt::iterator, propt &prop);
+  void finalize_lhs(lhs_mapt::iterator);
 
-  void convert_lhs_rec(
-    const exprt &expr,
-    std::size_t from,
-    std::size_t to,
-    propt &prop);
+  void convert_lhs_rec(const exprt &expr, std::size_t from, std::size_t to);
 
-  void convert_constraints(propt &prop);
+  void convert_constraints();
+
+  std::optional<exprt> convert_property(const exprt &);
 
   void map_vars(
     const irep_idt &module,
@@ -294,9 +297,6 @@ void convert_trans_to_netlistt::operator()(
 
   mode = ns.lookup(module).mode;
 
-  // build the net-list
-  aig_prop_constraintt aig_prop(dest, get_message_handler());
-
   // extract constraints from transition relation
   add_constraint(trans.invar());
   add_constraint(trans.trans());
@@ -306,13 +306,15 @@ void convert_trans_to_netlistt::operator()(
       it=lhs_map.begin();
       it!=lhs_map.end();
       it++)
-    finalize_lhs(it, aig_prop);
-    
+  {
+    finalize_lhs(it);
+  }
+
   // finish the var_map
   dest.var_map.build_reverse_map();
 
   // do the remaining transition constraints
-  convert_constraints(aig_prop);
+  convert_constraints();
 
   dest.constraints.insert(
     dest.constraints.end(), invar_constraints.begin(), invar_constraints.end());
@@ -323,82 +325,13 @@ void convert_trans_to_netlistt::operator()(
     transition_constraints.end());
   
   // initial state
-  dest.initial.push_back(instantiate_convert(
-    aig_prop, dest.var_map, trans.init(), ns, get_message_handler()));
+  dest.initial.push_back(solver.convert(trans.init()));
 
   // properties
   for(const auto &[id, property_expr] : properties)
   {
-    auto expr = property_expr; // copy
-
-    // we also convert propositions in assumptions
-    if(expr.id() == ID_sva_assume)
-      expr = to_sva_assume_expr(expr).op();
-
-    auto convert = [&aig_prop, this](const exprt &expr) -> literalt {
-      return instantiate_convert(
-        aig_prop, dest.var_map, expr, ns, get_message_handler());
-    };
-
-    if(expr.id() == ID_AG || expr.id() == ID_G || expr.id() == ID_sva_always)
-    {
-      auto get_phi = [](const exprt &expr) {
-        if(expr.id() == ID_AG)
-          return to_AG_expr(expr).op();
-        else if(expr.id() == ID_G)
-          return to_G_expr(expr).op();
-        else if(expr.id() == ID_sva_always)
-          return to_sva_always_expr(expr).op();
-        else
-          PRECONDITION(false);
-      };
-
-      auto phi = get_phi(expr);
-
-      if(!has_temporal_operator(phi))
-      {
-        // G p
-        dest.properties.emplace(id, netlistt::Gpt{convert(phi)});
-      }
-      else if(
-        phi.id() == ID_AF || phi.id() == ID_F ||
-        phi.id() == ID_sva_s_eventually)
-      {
-        auto get_psi = [](const exprt &expr) {
-          if(expr.id() == ID_AF)
-            return to_AF_expr(expr).op();
-          else if(expr.id() == ID_F)
-            return to_F_expr(expr).op();
-          else if(expr.id() == ID_sva_s_eventually)
-            return to_sva_s_eventually_expr(expr).op();
-          else
-            PRECONDITION(false);
-        };
-
-        auto psi = get_psi(phi);
-
-        if(!has_temporal_operator(psi))
-        {
-          // G F p
-          dest.properties.emplace(id, netlistt::GFpt{convert(psi)});
-        }
-        else
-        {
-          // unsupported
-          dest.properties.emplace(id, netlistt::not_translatedt{});
-        }
-      }
-      else
-      {
-        // unsupported
-        dest.properties.emplace(id, netlistt::not_translatedt{});
-      }
-    }
-    else
-    {
-      // unsupported
-      dest.properties.emplace(id, netlistt::not_translatedt{});
-    }
+    auto netlist_expr_opt = convert_property(property_expr);
+    dest.properties.emplace(id, netlist_expr_opt);
   }
 
   // find the nondet nodes
@@ -426,6 +359,75 @@ void convert_trans_to_netlistt::operator()(
 
 /*******************************************************************\
 
+Function: convert_trans_to_netlistt::convert_property
+
+  Inputs:
+
+ Outputs:
+
+ Purpose:
+
+\*******************************************************************/
+
+std::optional<exprt>
+convert_trans_to_netlistt::convert_property(const exprt &expr)
+{
+  if(is_temporal_operator(expr))
+  {
+    if(is_LTL_operator(expr) || is_CTL_operator(expr))
+    {
+      exprt copy = expr;
+      for(auto &op : copy.operands())
+      {
+        auto op_opt = convert_property(op);
+        if(op_opt.has_value())
+          op = op_opt.value();
+        else
+          return {};
+      }
+      return copy;
+    }
+    else if(is_SVA_operator(expr))
+    {
+      // Try to turn into LTL
+      auto LTL_opt = SVA_to_LTL(expr);
+      if(LTL_opt.has_value())
+        return convert_property(*LTL_opt);
+      else
+        return {};
+    }
+    else
+      return {};
+  }
+  else if(!has_temporal_operator(expr))
+  {
+    auto l = solver.convert(expr);
+    return literal_exprt{l};
+  }
+  else if(
+    expr.id() == ID_and || expr.id() == ID_or || expr.id() == ID_not ||
+    expr.id() == ID_implies || expr.id() == ID_xor || expr.id() == ID_xnor)
+  {
+    exprt copy = expr;
+    for(auto &op : copy.operands())
+    {
+      auto op_opt = convert_property(op);
+      if(op_opt.has_value())
+        op = op_opt.value();
+      else
+        return {};
+    }
+    return copy;
+  }
+  else
+  {
+    // contains temporal operator, but not propositional skeleton
+    return {};
+  }
+}
+
+/*******************************************************************\
+
 Function: convert_trans_to_netlistt::convert_constraints
 
   Inputs:
@@ -436,7 +438,7 @@ Function: convert_trans_to_netlistt::convert_constraints
 
 \*******************************************************************/
 
-void convert_trans_to_netlistt::convert_constraints(propt &prop)
+void convert_trans_to_netlistt::convert_constraints()
 {
   invar_constraints.reserve(
     transition_constraints.size() + constraint_list.size());
@@ -449,8 +451,7 @@ void convert_trans_to_netlistt::convert_constraints(propt &prop)
       it!=constraint_list.end();
       it++)
   {
-    literalt l=
-      instantiate_convert(prop, dest.var_map, *it, ns, get_message_handler());
+    literalt l = solver.convert(*it);
 
     if(has_subexpr(*it, ID_next_symbol))
       transition_constraints.push_back(l);
@@ -471,9 +472,7 @@ Function: convert_trans_to_netlistt::finalize_lhs
 
 \*******************************************************************/
 
-void convert_trans_to_netlistt::finalize_lhs(
-  lhs_mapt::iterator lhs_it,
-  propt &prop)
+void convert_trans_to_netlistt::finalize_lhs(lhs_mapt::iterator lhs_it)
 {
   lhs_entryt &lhs=lhs_it->second;
 
@@ -503,7 +502,7 @@ void convert_trans_to_netlistt::finalize_lhs(
   // do first one by setting the node appropriately
 
   lhs.in_progress=true;
-  lhs.l=convert_rhs(lhs.equal_to.front(), prop);
+  lhs.l = convert_rhs(lhs.equal_to.front());
 
   if(lhs.var->is_latch())
     lhs.bit->next=lhs.l;
@@ -522,10 +521,9 @@ void convert_trans_to_netlistt::finalize_lhs(
   {
     // first one? -- already done
     if(it==lhs.equal_to.begin()) continue;
-    
-    literalt l_rhs=convert_rhs(*it, prop);
-    transition_constraints.push_back(
-      prop.lequal(lhs.l, l_rhs));
+
+    literalt l_rhs = convert_rhs(*it);
+    transition_constraints.push_back(aig_prop.lequal(lhs.l, l_rhs));
   }
 }
 
@@ -543,8 +541,8 @@ Function: convert_trans_to_netlistt::convert_lhs_rec
 
 void convert_trans_to_netlistt::convert_lhs_rec(
   const exprt &expr,
-  std::size_t from, std::size_t to,
-  propt &prop)
+  std::size_t from,
+  std::size_t to)
 {
   PRECONDITION(from <= to);
 
@@ -565,8 +563,8 @@ void convert_trans_to_netlistt::convert_lhs_rec(
       
       // we only need to do wires
       if(!it->second.var->is_wire()) return;
-    
-      finalize_lhs(it, prop);
+
+      finalize_lhs(it);
     }
 
     return;
@@ -578,7 +576,7 @@ void convert_trans_to_netlistt::convert_lhs_rec(
          to_extractbit_expr(expr).index(), i)) // constant?
     {
       from = i.to_ulong();
-      convert_lhs_rec(to_extractbit_expr(expr).src(), from, from, prop);
+      convert_lhs_rec(to_extractbit_expr(expr).src(), from, from);
       return;
     }
   }
@@ -594,7 +592,7 @@ void convert_trans_to_netlistt::convert_lhs_rec(
       from = new_from.to_ulong();
       to = new_to.to_ulong();
 
-      convert_lhs_rec(to_extractbits_expr(expr).src(), from, to, prop);
+      convert_lhs_rec(to_extractbits_expr(expr).src(), from, to);
       return;
     }
   }
@@ -614,7 +612,7 @@ void convert_trans_to_netlistt::convert_lhs_rec(
     if(width==0)
       continue;
 
-    convert_lhs_rec(*it, 0, width-1, prop);
+    convert_lhs_rec(*it, 0, width - 1);
   }
 }
 
@@ -630,9 +628,7 @@ Function: convert_trans_to_netlistt::convert_rhs
 
 \*******************************************************************/
 
-literalt convert_trans_to_netlistt::convert_rhs(
-  const rhst &rhs,
-  propt &prop)
+literalt convert_trans_to_netlistt::convert_rhs(const rhst &rhs)
 {
   rhs_entryt &rhs_entry=*rhs.entry;
   
@@ -640,14 +636,12 @@ literalt convert_trans_to_netlistt::convert_rhs(
   if(!rhs_entry.converted)
   {
     // get all lhs symbols this depends on
-    convert_lhs_rec(rhs_entry.expr, 0, rhs_entry.width-1, prop);
+    convert_lhs_rec(rhs_entry.expr, 0, rhs_entry.width - 1);
 
     rhs_entry.converted=true;
 
     // now we can convert
-    instantiate_convert(
-      prop, dest.var_map, rhs_entry.expr, ns,
-      get_message_handler(), rhs_entry.bv);
+    rhs_entry.bv = solver.convert_bv(rhs_entry.expr);
 
     DATA_INVARIANT(rhs_entry.bv.size() == rhs_entry.width, "bit-width match");
   }

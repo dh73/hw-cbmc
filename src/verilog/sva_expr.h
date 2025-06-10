@@ -11,6 +11,31 @@ Author: Daniel Kroening, kroening@kroening.com
 
 #include <util/std_expr.h>
 
+#include "verilog_types.h"
+
+/// 1800-2017 16.6 Boolean expressions
+/// Conversion of a Boolean expression into a sequence or property
+class sva_boolean_exprt : public unary_exprt
+{
+public:
+  sva_boolean_exprt(exprt condition, typet __type)
+    : unary_exprt(ID_sva_boolean, std::move(condition), std::move(__type))
+  {
+  }
+};
+
+static inline const sva_boolean_exprt &to_sva_boolean_expr(const exprt &expr)
+{
+  sva_boolean_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<const sva_boolean_exprt &>(expr);
+}
+
+static inline sva_boolean_exprt &to_sva_boolean_expr(exprt &expr)
+{
+  sva_boolean_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<sva_boolean_exprt &>(expr);
+}
+
 /// accept_on, reject_on, sync_accept_on, sync_reject_on, disable_iff
 class sva_abort_exprt : public binary_predicate_exprt
 {
@@ -137,7 +162,7 @@ static inline sva_s_nexttime_exprt &to_sva_s_nexttime_expr(exprt &expr)
 class sva_indexed_nexttime_exprt : public binary_predicate_exprt
 {
 public:
-  sva_indexed_nexttime_exprt(exprt index, exprt op)
+  sva_indexed_nexttime_exprt(constant_exprt index, exprt op)
     : binary_predicate_exprt(
         std::move(index),
         ID_sva_indexed_nexttime,
@@ -145,14 +170,14 @@ public:
   {
   }
 
-  const exprt &index() const
+  const constant_exprt &index() const
   {
-    return op0();
+    return static_cast<const constant_exprt &>(op0());
   }
 
-  exprt &index()
+  constant_exprt &index()
   {
-    return op0();
+    return static_cast<constant_exprt &>(op0());
   }
 
   const exprt &op() const
@@ -190,7 +215,7 @@ to_sva_indexed_nexttime_expr(exprt &expr)
 class sva_indexed_s_nexttime_exprt : public binary_predicate_exprt
 {
 public:
-  sva_indexed_s_nexttime_exprt(exprt index, exprt op)
+  sva_indexed_s_nexttime_exprt(constant_exprt index, exprt op)
     : binary_predicate_exprt(
         std::move(index),
         ID_sva_indexed_s_nexttime,
@@ -198,14 +223,14 @@ public:
   {
   }
 
-  const exprt &index() const
+  const constant_exprt &index() const
   {
-    return op0();
+    return static_cast<const constant_exprt &>(op0());
   }
 
-  exprt &index()
+  constant_exprt &index()
   {
-    return op0();
+    return static_cast<constant_exprt &>(op0());
   }
 
   const exprt &op() const
@@ -239,39 +264,52 @@ to_sva_indexed_s_nexttime_expr(exprt &expr)
   return static_cast<sva_indexed_s_nexttime_exprt &>(expr);
 }
 
+/// For ranged SVA operators. The lower bound must be a constant
+/// post elaboration. The upper end need not be bounded,
+/// i.e., given as $
 class sva_ranged_predicate_exprt : public ternary_exprt
 {
 public:
   sva_ranged_predicate_exprt(
     irep_idt __id,
-    exprt __lower,
-    exprt __upper,
+    constant_exprt __from,
+    exprt __to,
     exprt __op)
     : ternary_exprt(
         __id,
-        std::move(__lower),
-        std::move(__upper),
+        std::move(__from),
+        std::move(__to),
         std::move(__op),
-        bool_typet())
+        bool_typet{})
   {
   }
 
-  const exprt &lower() const
+  const constant_exprt &from() const
   {
-    return op0();
+    return static_cast<const constant_exprt &>(op0());
   }
 
-  exprt &lower()
+  constant_exprt &from()
   {
-    return op0();
+    return static_cast<constant_exprt &>(op0());
   }
 
-  const exprt &upper() const
+  bool is_range() const
+  {
+    return op1().is_not_nil();
+  }
+
+  bool is_unbounded() const
+  {
+    return op1().id() == ID_infinity;
+  }
+
+  const exprt &to() const
   {
     return op1();
   }
 
-  exprt &upper()
+  exprt &to()
   {
     return op1();
   }
@@ -292,14 +330,58 @@ protected:
   using ternary_exprt::op2;
 };
 
-class sva_eventually_exprt : public sva_ranged_predicate_exprt
+static inline const sva_ranged_predicate_exprt &
+to_sva_ranged_predicate_exprt(const exprt &expr)
+{
+  sva_ranged_predicate_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<const sva_ranged_predicate_exprt &>(expr);
+}
+
+static inline sva_ranged_predicate_exprt &
+to_sva_ranged_predicate_exprt(exprt &expr)
+{
+  sva_ranged_predicate_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<sva_ranged_predicate_exprt &>(expr);
+}
+
+/// A specialisation of sva_ranged_predicate_exprt where both bounds
+/// are constants.
+class sva_bounded_range_predicate_exprt : public sva_ranged_predicate_exprt
 {
 public:
-  sva_eventually_exprt(exprt __lower, exprt __upper, exprt __op)
+  sva_bounded_range_predicate_exprt(
+    irep_idt __id,
+    constant_exprt __from,
+    constant_exprt __to,
+    exprt __op)
     : sva_ranged_predicate_exprt(
+        __id,
+        std::move(__from),
+        std::move(__to),
+        std::move(__op))
+  {
+  }
+
+  const constant_exprt &to() const
+  {
+    return static_cast<const constant_exprt &>(
+      sva_ranged_predicate_exprt::to());
+  }
+
+  constant_exprt &to()
+  {
+    return static_cast<constant_exprt &>(sva_ranged_predicate_exprt::to());
+  }
+};
+
+class sva_eventually_exprt : public sva_bounded_range_predicate_exprt
+{
+public:
+  sva_eventually_exprt(constant_exprt __from, constant_exprt __to, exprt __op)
+    : sva_bounded_range_predicate_exprt(
         ID_sva_eventually,
-        std::move(__lower),
-        std::move(__upper),
+        std::move(__from),
+        std::move(__to),
         std::move(__op))
   {
   }
@@ -347,11 +429,14 @@ static inline sva_s_eventually_exprt &to_sva_s_eventually_expr(exprt &expr)
 class sva_ranged_s_eventually_exprt : public sva_ranged_predicate_exprt
 {
 public:
-  explicit sva_ranged_s_eventually_exprt(exprt lower, exprt upper, exprt op)
+  explicit sva_ranged_s_eventually_exprt(
+    constant_exprt from,
+    exprt to,
+    exprt op)
     : sva_ranged_predicate_exprt(
         ID_sva_ranged_s_eventually,
-        std::move(lower),
-        std::move(upper),
+        std::move(from),
+        std::move(to),
         std::move(op))
   {
   }
@@ -399,11 +484,11 @@ static inline sva_always_exprt &to_sva_always_expr(exprt &expr)
 class sva_ranged_always_exprt : public sva_ranged_predicate_exprt
 {
 public:
-  sva_ranged_always_exprt(exprt lower, exprt upper, exprt op)
+  sva_ranged_always_exprt(constant_exprt from, exprt to, exprt op)
     : sva_ranged_predicate_exprt(
         ID_sva_ranged_always,
-        std::move(lower),
-        std::move(upper),
+        std::move(from),
+        std::move(to),
         std::move(op))
   {
   }
@@ -424,14 +509,14 @@ static inline sva_ranged_always_exprt &to_sva_ranged_always_expr(exprt &expr)
   return static_cast<sva_ranged_always_exprt &>(expr);
 }
 
-class sva_s_always_exprt : public sva_ranged_predicate_exprt
+class sva_s_always_exprt : public sva_bounded_range_predicate_exprt
 {
 public:
-  sva_s_always_exprt(exprt lower, exprt upper, exprt op)
-    : sva_ranged_predicate_exprt(
+  sva_s_always_exprt(constant_exprt from, constant_exprt to, exprt op)
+    : sva_bounded_range_predicate_exprt(
         ID_sva_s_always,
-        std::move(lower),
-        std::move(upper),
+        std::move(from),
+        std::move(to),
         std::move(op))
   {
   }
@@ -596,14 +681,89 @@ static inline sva_s_until_with_exprt &to_sva_s_until_with_expr(exprt &expr)
   return static_cast<sva_s_until_with_exprt &>(expr);
 }
 
-class sva_overlapped_implication_exprt : public binary_predicate_exprt
+/// base class for |->, |=>, #-#, #=#
+class sva_implication_base_exprt : public binary_predicate_exprt
 {
 public:
-  explicit sva_overlapped_implication_exprt(exprt op0, exprt op1)
+  explicit sva_implication_base_exprt(
+    exprt __antecedent,
+    irep_idt __id,
+    exprt __consequent)
     : binary_predicate_exprt(
-        std::move(op0),
+        std::move(__antecedent),
+        __id,
+        std::move(__consequent))
+  {
+  }
+
+  // a sequence
+  const exprt &antecedent() const
+  {
+    return lhs();
+  }
+
+  exprt &antecedent()
+  {
+    return lhs();
+  }
+
+  const exprt &sequence() const
+  {
+    return op0();
+  }
+
+  exprt &sequence()
+  {
+    return op0();
+  }
+
+  // a property
+  const exprt &consequent() const
+  {
+    return rhs();
+  }
+
+  exprt &consequent()
+  {
+    return rhs();
+  }
+
+  const exprt &property() const
+  {
+    return op1();
+  }
+
+  exprt &property()
+  {
+    return op1();
+  }
+};
+
+static inline const sva_implication_base_exprt &
+to_sva_implication_base_expr(const exprt &expr)
+{
+  sva_implication_base_exprt::check(expr);
+  return static_cast<const sva_implication_base_exprt &>(expr);
+}
+
+static inline sva_implication_base_exprt &
+to_sva_implication_base_expr(exprt &expr)
+{
+  sva_implication_base_exprt::check(expr);
+  return static_cast<sva_implication_base_exprt &>(expr);
+}
+
+/// |->
+class sva_overlapped_implication_exprt : public sva_implication_base_exprt
+{
+public:
+  explicit sva_overlapped_implication_exprt(
+    exprt __antecedent,
+    exprt __consequent)
+    : sva_implication_base_exprt(
+        std::move(__antecedent),
         ID_sva_overlapped_implication,
-        std::move(op1))
+        std::move(__consequent))
   {
   }
 };
@@ -624,14 +784,17 @@ to_sva_overlapped_implication_expr(exprt &expr)
   return static_cast<sva_overlapped_implication_exprt &>(expr);
 }
 
-class sva_non_overlapped_implication_exprt : public binary_predicate_exprt
+/// |=>
+class sva_non_overlapped_implication_exprt : public sva_implication_base_exprt
 {
 public:
-  explicit sva_non_overlapped_implication_exprt(exprt op0, exprt op1)
-    : binary_predicate_exprt(
-        std::move(op0),
+  explicit sva_non_overlapped_implication_exprt(
+    exprt __antecedent,
+    exprt __consequent)
+    : sva_implication_base_exprt(
+        std::move(__antecedent),
         ID_sva_non_overlapped_implication,
-        std::move(op1))
+        std::move(__consequent))
   {
   }
 };
@@ -698,14 +861,15 @@ static inline sva_and_exprt &to_sva_and_expr(exprt &expr)
   return static_cast<sva_and_exprt &>(expr);
 }
 
-class sva_sequence_concatenation_exprt : public binary_predicate_exprt
+class sva_sequence_concatenation_exprt : public binary_exprt
 {
 public:
   explicit sva_sequence_concatenation_exprt(exprt op0, exprt op1)
-    : binary_predicate_exprt(
+    : binary_exprt(
         std::move(op0),
         ID_sva_sequence_concatenation,
-        std::move(op1))
+        std::move(op1),
+        verilog_sva_sequence_typet{})
   {
   }
 };
@@ -795,27 +959,19 @@ static inline sva_or_exprt &to_sva_or_expr(exprt &expr)
   return static_cast<sva_or_exprt &>(expr);
 }
 
-class sva_followed_by_exprt : public binary_predicate_exprt
+// #-#, #=#
+class sva_followed_by_exprt : public sva_implication_base_exprt
 {
 public:
-  const exprt &sequence() const
+  explicit sva_followed_by_exprt(
+    exprt __antecedent,
+    irep_idt __id,
+    exprt __consequent)
+    : sva_implication_base_exprt(
+        std::move(__antecedent),
+        __id,
+        std::move(__consequent))
   {
-    return op0();
-  }
-
-  exprt &sequence()
-  {
-    return op0();
-  }
-
-  const exprt &property() const
-  {
-    return op1();
-  }
-
-  exprt &property()
-  {
-    return op1();
   }
 };
 
@@ -841,51 +997,60 @@ static inline sva_followed_by_exprt &to_sva_followed_by_expr(exprt &expr)
 class sva_cycle_delay_exprt : public ternary_exprt
 {
 public:
-  sva_cycle_delay_exprt(exprt from, exprt to, exprt op)
+  /// The upper bound may be $
+  sva_cycle_delay_exprt(constant_exprt from, exprt to, exprt op)
     : ternary_exprt(
         ID_sva_cycle_delay,
         std::move(from),
         std::move(to),
         std::move(op),
-        bool_typet())
+        verilog_sva_sequence_typet{})
   {
   }
 
-  sva_cycle_delay_exprt(exprt cycles, exprt op)
+  sva_cycle_delay_exprt(constant_exprt cycles, exprt op)
     : ternary_exprt(
         ID_sva_cycle_delay,
         std::move(cycles),
         nil_exprt{},
         std::move(op),
-        bool_typet())
+        verilog_sva_sequence_typet{})
   {
   }
 
-  const exprt &from() const
+  const constant_exprt &from() const
   {
-    return op0();
+    return static_cast<const constant_exprt &>(op0());
   }
 
-  exprt &from()
+  constant_exprt &from()
   {
-    return op0();
+    return static_cast<constant_exprt &>(op0());
   }
 
-  // may be nil (just the singleton 'from') or
-  // infinity (half-open interval starting at 'from')
-  const exprt &to() const
+  // May be just the singleton 'from' or
+  // a half-open interval starting at 'from'.
+  // Use is_range() and is_unbounded() to distinguish.
+  const constant_exprt &to() const
   {
-    return op1();
+    PRECONDITION(is_range() && !is_unbounded());
+    return static_cast<const constant_exprt &>(op1());
   }
 
-  exprt &to()
+  constant_exprt &to()
   {
-    return op1();
+    PRECONDITION(is_range() && !is_unbounded());
+    return static_cast<constant_exprt &>(op1());
+  }
+
+  bool is_range() const
+  {
+    return op1().is_not_nil();
   }
 
   bool is_unbounded() const
   {
-    return to().id() == ID_infinity;
+    return op1().id() == ID_infinity;
   }
 
   const exprt &op() const
@@ -923,9 +1088,15 @@ class sva_cycle_delay_plus_exprt : public unary_exprt
 {
 public:
   explicit sva_cycle_delay_plus_exprt(exprt op)
-    : unary_exprt(ID_sva_cycle_delay_plus, std::move(op), bool_typet())
+    : unary_exprt(
+        ID_sva_cycle_delay_plus,
+        std::move(op),
+        verilog_sva_sequence_typet{})
   {
   }
+
+  // ##[1:$] op
+  exprt lower() const;
 };
 
 static inline const sva_cycle_delay_plus_exprt &
@@ -948,9 +1119,15 @@ class sva_cycle_delay_star_exprt : public unary_exprt
 {
 public:
   explicit sva_cycle_delay_star_exprt(exprt op)
-    : unary_exprt(ID_sva_cycle_delay_star, std::move(op), bool_typet())
+    : unary_exprt(
+        ID_sva_cycle_delay_star,
+        std::move(op),
+        verilog_sva_sequence_typet{})
   {
   }
+
+  // ##[0:$] op
+  exprt lower() const;
 };
 
 static inline const sva_cycle_delay_star_exprt &
@@ -1033,44 +1210,88 @@ static inline sva_if_exprt &to_sva_if_expr(exprt &expr)
   return static_cast<sva_if_exprt &>(expr);
 }
 
-class sva_strong_exprt : public unary_exprt
+/// Base class for sequence property expressions.
+/// 1800-2017 16.12.2 Sequence property
+class sva_sequence_property_expr_baset : public unary_predicate_exprt
 {
 public:
-  sva_strong_exprt(exprt __op, typet __type)
-    : unary_exprt(ID_sva_strong, std::move(__op), std::move(__type))
+  sva_sequence_property_expr_baset(irep_idt __id, exprt __op)
+    : unary_predicate_exprt(__id, std::move(__op))
+  {
+  }
+
+  const exprt &sequence() const
+  {
+    return op();
+  }
+
+  exprt &sequence()
+  {
+    return op();
+  }
+
+protected:
+  using unary_predicate_exprt::op;
+};
+
+inline const sva_sequence_property_expr_baset &
+to_sva_sequence_property_expr_base(const exprt &expr)
+{
+  sva_sequence_property_expr_baset::check(expr);
+  return static_cast<const sva_sequence_property_expr_baset &>(expr);
+}
+
+inline sva_sequence_property_expr_baset &
+to_sva_sequence_property_expr_base(exprt &expr)
+{
+  sva_sequence_property_expr_baset::check(expr);
+  return static_cast<sva_sequence_property_expr_baset &>(expr);
+}
+
+class sva_strong_exprt : public sva_sequence_property_expr_baset
+{
+public:
+  sva_strong_exprt(irep_idt __id, exprt __op)
+    : sva_sequence_property_expr_baset(__id, std::move(__op))
   {
   }
 };
 
 inline const sva_strong_exprt &to_sva_strong_expr(const exprt &expr)
 {
+  PRECONDITION(
+    expr.id() == ID_sva_strong || expr.id() == ID_sva_implicit_strong);
   sva_strong_exprt::check(expr);
   return static_cast<const sva_strong_exprt &>(expr);
 }
 
 inline sva_strong_exprt &to_sva_strong_expr(exprt &expr)
 {
+  PRECONDITION(
+    expr.id() == ID_sva_strong || expr.id() == ID_sva_implicit_strong);
   sva_strong_exprt::check(expr);
   return static_cast<sva_strong_exprt &>(expr);
 }
 
-class sva_weak_exprt : public unary_exprt
+class sva_weak_exprt : public sva_sequence_property_expr_baset
 {
 public:
-  sva_weak_exprt(exprt __op, typet __type)
-    : unary_exprt(ID_sva_weak, std::move(__op), std::move(__type))
+  sva_weak_exprt(irep_idt __id, exprt __op)
+    : sva_sequence_property_expr_baset(__id, std::move(__op))
   {
   }
 };
 
 inline const sva_weak_exprt &to_sva_weak_expr(const exprt &expr)
 {
+  PRECONDITION(expr.id() == ID_sva_weak || expr.id() == ID_sva_implicit_weak);
   sva_weak_exprt::check(expr);
   return static_cast<const sva_weak_exprt &>(expr);
 }
 
 inline sva_weak_exprt &to_sva_weak_expr(exprt &expr)
 {
+  PRECONDITION(expr.id() == ID_sva_weak || expr.id() == ID_sva_implicit_weak);
   sva_weak_exprt::check(expr);
   return static_cast<sva_weak_exprt &>(expr);
 }
@@ -1136,7 +1357,7 @@ public:
     return (case_itemst &)(op1().operands());
   }
 
-  exprt lowering() const;
+  exprt lower() const;
 
 protected:
   using binary_predicate_exprt::op0;
@@ -1155,30 +1376,325 @@ inline sva_case_exprt &to_sva_case_expr(exprt &expr)
   return static_cast<sva_case_exprt &>(expr);
 }
 
-class sva_sequence_consecutive_repetition_exprt : public binary_predicate_exprt
+/// Base class for [->...], [*...], [=...]
+/// The ... constraint may be blank, x, x:y, x:$
+class sva_sequence_repetition_exprt : public ternary_exprt
 {
 public:
-  exprt lower() const;
+  /// number of repetitions not given, e.g., [*] or [+]
+  sva_sequence_repetition_exprt(exprt __op, irep_idt __id)
+    : ternary_exprt{
+        __id,
+        std::move(__op),
+        nil_exprt{},
+        nil_exprt{},
+        verilog_sva_sequence_typet{}}
+  {
+  }
+
+  /// fixed number of repetitions
+  sva_sequence_repetition_exprt(
+    exprt __op,
+    irep_idt __id,
+    constant_exprt __repetitions)
+    : ternary_exprt{
+        __id,
+        std::move(__op),
+        std::move(__repetitions),
+        nil_exprt{},
+        verilog_sva_sequence_typet{}}
+  {
+  }
+
+  /// bounded range for the number of repetitions
+  sva_sequence_repetition_exprt(
+    exprt __op,
+    irep_idt __id,
+    constant_exprt __from,
+    constant_exprt __to)
+    : ternary_exprt{
+        __id,
+        std::move(__op),
+        std::move(__from),
+        std::move(__to),
+        verilog_sva_sequence_typet{}}
+  {
+  }
+
+  /// unbounded range for the number of repetitions
+  sva_sequence_repetition_exprt(
+    exprt __op,
+    irep_idt __id,
+    constant_exprt __from,
+    infinity_exprt __to)
+    : ternary_exprt{
+        __id,
+        std::move(__op),
+        std::move(__from),
+        std::move(__to),
+        verilog_sva_sequence_typet{}}
+  {
+  }
+
+  // May be a sequence for [*...], Boolean otherwise
+  const exprt &op() const
+  {
+    return op0();
+  }
+
+  exprt &op()
+  {
+    return op0();
+  }
+
+  /// true if number of repetitions is given
+  bool repetitions_given() const
+  {
+    return op1().is_not_nil();
+  }
+
+  /// op[*0] is a special case, denoting the empty match
+  bool is_empty_match() const
+  {
+    return is_singleton() && op1().is_zero();
+  }
+
+  // The number of repetitions must be a constant after elaboration.
+  const constant_exprt &repetitions() const
+  {
+    PRECONDITION(is_singleton());
+    return static_cast<const constant_exprt &>(op1());
+  }
+
+  constant_exprt &repetitions()
+  {
+    PRECONDITION(is_singleton());
+    return static_cast<constant_exprt &>(op1());
+  }
+
+  bool is_range() const
+  {
+    return op2().is_not_nil();
+  }
+
+  bool is_bounded_range() const
+  {
+    return op2().is_not_nil() && op2().id() != ID_infinity;
+  }
+
+  bool is_singleton() const
+  {
+    return op1().is_not_nil() && op2().is_nil();
+  }
+
+  bool is_unbounded() const
+  {
+    return op2().id() == ID_infinity;
+  }
+
+  const constant_exprt &from() const
+  {
+    PRECONDITION(is_range());
+    return static_cast<const constant_exprt &>(op1());
+  }
+
+  constant_exprt &from()
+  {
+    PRECONDITION(is_range());
+    return static_cast<constant_exprt &>(op1());
+  }
+
+  const constant_exprt &to() const
+  {
+    PRECONDITION(is_bounded_range());
+    return static_cast<const constant_exprt &>(op2());
+  }
+
+  constant_exprt &to()
+  {
+    PRECONDITION(is_bounded_range());
+    return static_cast<constant_exprt &>(op2());
+  }
 
 protected:
-  using binary_predicate_exprt::op0;
-  using binary_predicate_exprt::op1;
+  using ternary_exprt::op0;
+  using ternary_exprt::op1;
+  using ternary_exprt::op2;
 };
 
-inline const sva_sequence_consecutive_repetition_exprt &
-to_sva_sequence_consecutive_repetition_expr(const exprt &expr)
+inline const sva_sequence_repetition_exprt &
+to_sva_sequence_repetition_expr(const exprt &expr)
 {
-  PRECONDITION(expr.id() == ID_sva_sequence_consecutive_repetition);
-  sva_sequence_consecutive_repetition_exprt::check(expr);
-  return static_cast<const sva_sequence_consecutive_repetition_exprt &>(expr);
+  sva_sequence_repetition_exprt::check(expr);
+  return static_cast<const sva_sequence_repetition_exprt &>(expr);
 }
 
-inline sva_sequence_consecutive_repetition_exprt &
-to_sva_sequence_consecutive_repetition_expr(exprt &expr)
+inline sva_sequence_repetition_exprt &
+to_sva_sequence_repetition_expr(exprt &expr)
 {
-  PRECONDITION(expr.id() == ID_sva_sequence_consecutive_repetition);
-  sva_sequence_consecutive_repetition_exprt::check(expr);
-  return static_cast<sva_sequence_consecutive_repetition_exprt &>(expr);
+  sva_sequence_repetition_exprt::check(expr);
+  return static_cast<sva_sequence_repetition_exprt &>(expr);
+}
+
+/// op[+]
+class sva_sequence_repetition_plus_exprt : public sva_sequence_repetition_exprt
+{
+public:
+  /// The operand is a sequence
+  explicit sva_sequence_repetition_plus_exprt(exprt op)
+    : sva_sequence_repetition_exprt{
+        std::move(op),
+        ID_sva_sequence_repetition_plus}
+  {
+  }
+
+  // op[*1:$]
+  exprt lower() const;
+};
+
+static inline const sva_sequence_repetition_plus_exprt &
+to_sva_sequence_repetition_plus_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_repetition_plus);
+  sva_sequence_repetition_plus_exprt::check(expr);
+  return static_cast<const sva_sequence_repetition_plus_exprt &>(expr);
+}
+
+static inline sva_sequence_repetition_plus_exprt &
+to_sva_sequence_repetition_plus_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_repetition_plus);
+  sva_sequence_repetition_plus_exprt::check(expr);
+  return static_cast<sva_sequence_repetition_plus_exprt &>(expr);
+}
+
+/// [*] or [*n] or [*x:y] or [*x:$]
+class sva_sequence_repetition_star_exprt : public sva_sequence_repetition_exprt
+{
+public:
+  /// op[*]
+  explicit sva_sequence_repetition_star_exprt(exprt __op)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_repetition_star}
+  {
+  }
+
+  /// op[*n]
+  sva_sequence_repetition_star_exprt(exprt __op, constant_exprt __repetitions)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_repetition_star,
+        std::move(__repetitions)}
+  {
+  }
+
+  /// op[*x:y]
+  sva_sequence_repetition_star_exprt(
+    exprt __op,
+    constant_exprt __from,
+    constant_exprt __to)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_repetition_star,
+        std::move(__from),
+        std::move(__to)}
+  {
+  }
+
+  /// op[*x:$]
+  sva_sequence_repetition_star_exprt(
+    exprt __op,
+    constant_exprt __from,
+    infinity_exprt __to)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_repetition_star,
+        std::move(__from),
+        std::move(__to)}
+  {
+  }
+
+  /// [*] --> [0:$]
+  /// [*n] --> op ##1 op ##1 op ...
+  /// [*x:y] --> op[*x] or op[*x+1] or ... or op[*y]
+  exprt lower() const;
+};
+
+inline const sva_sequence_repetition_star_exprt &
+to_sva_sequence_repetition_star_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_repetition_star);
+  sva_sequence_repetition_star_exprt::check(expr);
+  return static_cast<const sva_sequence_repetition_star_exprt &>(expr);
+}
+
+inline sva_sequence_repetition_star_exprt &
+to_sva_sequence_repetition_star_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_repetition_star);
+  sva_sequence_repetition_star_exprt::check(expr);
+  return static_cast<sva_sequence_repetition_star_exprt &>(expr);
+}
+
+class sva_sequence_goto_repetition_exprt : public sva_sequence_repetition_exprt
+{
+public:
+  sva_sequence_goto_repetition_exprt(exprt __op, constant_exprt __repetitions)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_goto_repetition,
+        std::move(__repetitions)}
+  {
+  }
+};
+
+inline const sva_sequence_goto_repetition_exprt &
+to_sva_sequence_goto_repetition_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_goto_repetition);
+  sva_sequence_goto_repetition_exprt::check(expr);
+  return static_cast<const sva_sequence_goto_repetition_exprt &>(expr);
+}
+
+inline sva_sequence_goto_repetition_exprt &
+to_sva_sequence_goto_repetition_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_goto_repetition);
+  sva_sequence_goto_repetition_exprt::check(expr);
+  return static_cast<sva_sequence_goto_repetition_exprt &>(expr);
+}
+
+class sva_sequence_non_consecutive_repetition_exprt
+  : public sva_sequence_repetition_exprt
+{
+public:
+  sva_sequence_non_consecutive_repetition_exprt(
+    exprt __op,
+    constant_exprt __repetitions)
+    : sva_sequence_repetition_exprt{
+        std::move(__op),
+        ID_sva_sequence_non_consecutive_repetition,
+        std::move(__repetitions)}
+  {
+  }
+};
+
+inline const sva_sequence_non_consecutive_repetition_exprt &
+to_sva_sequence_non_consecutive_repetition_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_non_consecutive_repetition);
+  sva_sequence_non_consecutive_repetition_exprt::check(expr);
+  return static_cast<const sva_sequence_non_consecutive_repetition_exprt &>(
+    expr);
+}
+
+inline sva_sequence_non_consecutive_repetition_exprt &
+to_sva_sequence_non_consecutive_repetition_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_non_consecutive_repetition);
+  sva_sequence_non_consecutive_repetition_exprt::check(expr);
+  return static_cast<sva_sequence_non_consecutive_repetition_exprt &>(expr);
 }
 
 class sva_sequence_intersect_exprt : public binary_exprt
@@ -1206,6 +1722,35 @@ to_sva_sequence_intersect_expr(exprt &expr)
   return static_cast<sva_sequence_intersect_exprt &>(expr);
 }
 
+class sva_sequence_within_exprt : public binary_exprt
+{
+public:
+  sva_sequence_within_exprt(exprt op0, exprt op1)
+    : binary_exprt(
+        std::move(op0),
+        ID_sva_sequence_within,
+        std::move(op1),
+        verilog_sva_sequence_typet{})
+  {
+  }
+};
+
+static inline const sva_sequence_within_exprt &
+to_sva_sequence_within_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_within);
+  sva_sequence_within_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<const sva_sequence_within_exprt &>(expr);
+}
+
+static inline sva_sequence_within_exprt &
+to_sva_sequence_within_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_within);
+  sva_sequence_within_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<sva_sequence_within_exprt &>(expr);
+}
+
 class sva_sequence_throughout_exprt : public binary_exprt
 {
 public:
@@ -1230,5 +1775,73 @@ to_sva_sequence_throughout_expr(exprt &expr)
   sva_sequence_throughout_exprt::check(expr, validation_modet::INVARIANT);
   return static_cast<sva_sequence_throughout_exprt &>(expr);
 }
+
+class sva_sequence_first_match_exprt : public binary_exprt
+{
+public:
+  // the second operand is optional
+  explicit sva_sequence_first_match_exprt(exprt op)
+    : binary_exprt(std::move(op), ID_sva_sequence_first_match, nil_exprt{})
+  {
+  }
+
+  sva_sequence_first_match_exprt(exprt op, exprt action)
+    : binary_exprt(
+        std::move(op),
+        ID_sva_sequence_first_match,
+        std::move(action))
+  {
+  }
+};
+
+static inline const sva_sequence_first_match_exprt &
+to_sva_sequence_first_match_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_first_match);
+  sva_sequence_first_match_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<const sva_sequence_first_match_exprt &>(expr);
+}
+
+static inline sva_sequence_first_match_exprt &
+to_sva_sequence_first_match_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_first_match);
+  sva_sequence_first_match_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<sva_sequence_first_match_exprt &>(expr);
+}
+
+/// 1800-2017 16.12.2 Sequence property
+/// Equivalent to weak(...) or strong(...) depending on context.
+class sva_sequence_property_exprt : public sva_sequence_property_expr_baset
+{
+public:
+  explicit sva_sequence_property_exprt(exprt op)
+    : sva_sequence_property_expr_baset(ID_sva_sequence_property, std::move(op))
+  {
+  }
+};
+
+static inline const sva_sequence_property_exprt &
+to_sva_sequence_property_expr(const exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_property);
+  sva_sequence_property_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<const sva_sequence_property_exprt &>(expr);
+}
+
+static inline sva_sequence_property_exprt &
+to_sva_sequence_property_expr(exprt &expr)
+{
+  PRECONDITION(expr.id() == ID_sva_sequence_property);
+  sva_sequence_property_exprt::check(expr, validation_modet::INVARIANT);
+  return static_cast<sva_sequence_property_exprt &>(expr);
+}
+
+/// SVA sequences can be interpreted as weak or strong
+enum class sva_sequence_semanticst
+{
+  WEAK,
+  STRONG
+};
 
 #endif

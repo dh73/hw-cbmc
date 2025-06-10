@@ -13,14 +13,18 @@ Author: Daniel Kroening, kroening@kroening.com
 #include <util/help_formatter.h>
 #include <util/string2int.h>
 
+#include <trans-netlist/smv_netlist.h>
+
 #include "diatest.h"
 #include "ebmc_base.h"
 #include "ebmc_error.h"
 #include "ebmc_version.h"
+#include "instrument_buechi.h"
 #include "liveness_to_safety.h"
 #include "netlist.h"
 #include "neural_liveness.h"
 #include "output_file.h"
+#include "output_smv_word_level.h"
 #include "property_checker.h"
 #include "random_traces.h"
 #include "ranking_function.h"
@@ -199,15 +203,6 @@ int ebmc_parse_optionst::doit()
       // return do_two_phase_induction();
     }
 
-    if(cmdline.isset("show-trans"))
-      return show_trans(cmdline, ui_message_handler);
-
-    if(cmdline.isset("verilog-rtl"))
-      return show_trans_verilog_rtl(cmdline, ui_message_handler);
-
-    if(cmdline.isset("verilog-netlist"))
-      return show_trans_verilog_netlist(cmdline, ui_message_handler);
-
     // get the transition system
     auto transition_system = get_transition_system(cmdline, ui_message_handler);
 
@@ -227,9 +222,44 @@ int ebmc_parse_optionst::doit()
       return 0;
     }
 
+    // LTL/SVA to Buechi?
+    if(cmdline.isset("buechi"))
+      instrument_buechi(transition_system, properties, ui_message_handler);
+
     // possibly apply liveness-to-safety
     if(cmdline.isset("liveness-to-safety"))
       liveness_to_safety(transition_system, properties);
+
+    if(cmdline.isset("smv-word-level"))
+    {
+      auto filename = cmdline.value_opt("outfile").value_or("-");
+      output_filet output_file{filename};
+      output_smv_word_level(
+        transition_system, properties, output_file.stream());
+      return 0;
+    }
+
+    if(cmdline.isset("show-trans"))
+    {
+      auto filename = cmdline.value_opt("outfile").value_or("-");
+      output_filet output_file{filename};
+      return show_trans(transition_system, output_file.stream());
+    }
+
+    if(cmdline.isset("verilog-rtl"))
+    {
+      auto filename = cmdline.value_opt("outfile").value_or("-");
+      output_filet output_file{filename};
+      return show_trans_verilog_rtl(transition_system, output_file.stream());
+    }
+
+    if(cmdline.isset("verilog-netlist"))
+    {
+      auto filename = cmdline.value_opt("outfile").value_or("-");
+      output_filet output_file{filename};
+      return show_trans_verilog_netlist(
+        transition_system, output_file.stream());
+    }
 
     if(cmdline.isset("show-varmap"))
     {
@@ -278,7 +308,7 @@ int ebmc_parse_optionst::doit()
       outfile.stream() << "-- Generated from "
                        << transition_system.main_symbol->name << '\n';
       outfile.stream() << '\n';
-      netlist.output_smv(outfile.stream());
+      smv_netlist(netlist, outfile.stream());
       return 0;
     }
 
@@ -332,13 +362,13 @@ Function: ebmc_parse_optionst::help
 
 void ebmc_parse_optionst::help()
 {
-  std::cout <<
-    "\n"
-    "* *      EBMC - Copyright (C) 2001-2017 Daniel Kroening     * *\n"
-    "* *                     Version " EBMC_VERSION "                         * *\n"
-    "* *     University of Oxford, Computer Science Department   * *\n"
-    "* *                  kroening@kroening.com                  * *\n"
-    "\n";
+  std::cout
+    << '\n'
+    << banner_string("EBMC", EBMC_VERSION) << '\n'
+    << "* *      EBMC - Copyright (C) 2001-2017 Daniel Kroening     * *\n"
+       "* *     University of Oxford, Computer Science Department   * *\n"
+       "* *                  kroening@kroening.com                  * *\n"
+       "\n";
 
   std::cout << help_formatter(
     // clang-format off
@@ -361,6 +391,7 @@ void ebmc_parse_optionst::help()
     " {y--show-properties}           \t list the properties in the model\n"
     " {y--property} {uid}            \t check the property with given ID\n"
     " {y--liveness-to-safety}        \t translate liveness properties to safety properties\n"
+    " {y--buechi}                    \t translate LTL/SVA properties to Buechi acceptance\n"
     "\n"
     "Methods:\n"
     " {y--k-induction}               \t do k-induction with k=bound\n"
@@ -418,6 +449,7 @@ void ebmc_parse_optionst::help()
     " {y--smv-netlist}               \t show netlist in SMV format\n"
     " {y--dot-netlist}               \t show netlist in DOT format\n"
     " {y--show-trans}                \t show transition system\n"
+    " {y--smv-word-level}            \t output word-level SMV\n"
     " {y--verbosity} {u#}            \t verbosity level, from 0 (silent) to 10 (everything)\n"
     // clang-format on
     "\n");
